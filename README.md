@@ -1,45 +1,97 @@
 # intellij-spring-helm-env-hints
 
-![Build](https://github.com/kev007/intellij-spring-helm-env-hints/workflows/Build/badge.svg)
-[![Version](https://img.shields.io/jetbrains/plugin/v/MARKETPLACE_ID.svg)](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID)
-[![Downloads](https://img.shields.io/jetbrains/plugin/d/MARKETPLACE_ID.svg)](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID)
+IntelliJ plugin that links Spring `application.yaml` properties and Helm container environment variables so you can navigate between both sides.
 
-## Template ToDo list
-- [x] Create a new [IntelliJ Platform Plugin Template][template] project.
-- [ ] Get familiar with the [template documentation][template].
-- [ ] Adjust the [group](./gradle.properties), as well as the [id](./src/main/resources/META-INF/plugin.xml), [name](./src/main/resources/META-INF/plugin.xml), and [sources package](./src/main/kotlin).
-- [ ] Adjust the plugin [description](./src/main/resources/META-INF/plugin.xml) (see [Tips][docs:plugin-description]) and this README to describe what your plugin does.
-- [ ] Review the [Legal Agreements](https://plugins.jetbrains.com/docs/marketplace/legal-agreements.html?from=IJPluginTemplate).
-- [ ] [Publish a plugin manually](https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html?from=IJPluginTemplate) for the first time.
-- [ ] Set the `MARKETPLACE_ID` in the above README badges. You can obtain it once the plugin is published to JetBrains Marketplace.
-- [ ] Set the [Plugin Signing](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html?from=IJPluginTemplate) related [secrets](https://github.com/JetBrains/intellij-platform-plugin-template#environment-variables).
-- [ ] Set the [Deployment Token](https://plugins.jetbrains.com/docs/marketplace/plugin-upload.html?from=IJPluginTemplate).
-- [ ] Click the <kbd>Watch</kbd> button on the top of the [IntelliJ Platform Plugin Template][template] to be notified about releases containing new features and fixes.
+## What it does
 
-This Fancy IntelliJ Platform Plugin is going to be your implementation of the brilliant ideas that you have.
+- `Go to Declaration` / `Go to Usage` style navigation between:
+  - Spring keys in `application*.yml` or `application*.yaml`
+  - Helm env vars (`name: MY_ENV_VAR`) in files under `/templates/`
+- Bidirectional mapping support:
+  - `my.service.url` -> `MY_SERVICE_URL`
+  - `MY_SERVICE_URL` -> `my.service.url`
+- PSI references for YAML content to improve IDE navigation behavior.
+
+## Implemented features
+
+- `GotoDeclarationHandler` integration for mapped variables.
+- `PsiReferenceContributor` for YAML-based cross-file references.
+- `ReferencesSearch` query executor to support cross-name usage lookups.
+- Tests covering both directions:
+  - Spring -> Helm
+  - Helm -> Spring
+
+## Current matching rules
+
+- Spring files are detected by filename starting with `application` and extension `.yml` or `.yaml`.
+- Helm files are detected by path containing `/templates/` and extension `.yml` or `.yaml`.
+- Helm env vars are matched on lines like:
+  - `name: MY_ENV_VAR`
+  - `- name: MY_ENV_VAR`
+- Spring key normalization:
+  - Non-alphanumeric characters become `_`
+  - Repeated `_` are collapsed
+  - Result is uppercased
+
+## Project structure (key files)
+
+- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingSupport.kt`
+- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingGotoDeclarationHandler.kt`
+- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingReferenceContributor.kt`
+- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingReferencesSearch.kt`
+- `src/main/resources/META-INF/plugin.xml`
+
+## Packaging
+
+Build the installable plugin ZIP:
+
+```powershell
+Set-Location "C:/workspace/intellij-spring-helm-env-hints"
+./gradlew.bat buildPlugin
+```
+
+Generated artifact:
+
+- `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
 
 ## Installation
 
-- Using the IDE built-in plugin system:
+Install the ZIP in IntelliJ IDEA:
 
-  <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>Marketplace</kbd> > <kbd>Search for "intellij-spring-helm-env-hints"</kbd> >
-  <kbd>Install</kbd>
+1. Open <kbd>Settings/Preferences</kbd> -> <kbd>Plugins</kbd>
+2. Click the gear icon -> <kbd>Install Plugin from Disk...</kbd>
+3. Select `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
+4. Restart the IDE when prompted
 
-- Using JetBrains Marketplace:
+## Local development
 
-  Go to [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID) and install it by clicking the <kbd>Install to ...</kbd> button in case your IDE is running.
+Run focused feature tests:
 
-  You can also download the [latest release](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID/versions) from JetBrains Marketplace and install it manually using
-  <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>⚙️</kbd> > <kbd>Install plugin from disk...</kbd>
+```powershell
+Set-Location "C:/workspace/intellij-spring-helm-env-hints"
+./gradlew.bat test --tests "*EnvVarMappingGotoDeclarationHandlerTest" --tests "*EnvVarMappingReferenceContributorTest"
+```
 
-- Manually:
+Run all tests:
 
-  Download the [latest release](https://github.com/kev007/intellij-spring-helm-env-hints/releases/latest) and install it manually using
-  <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>⚙️</kbd> > <kbd>Install plugin from disk...</kbd>
+```powershell
+Set-Location "C:/workspace/intellij-spring-helm-env-hints"
+./gradlew.bat test
+```
 
+Run the plugin in sandbox IDE:
 
----
-Plugin based on the [IntelliJ Platform Plugin Template][template].
+```powershell
+Set-Location "C:/workspace/intellij-spring-helm-env-hints"
+./gradlew.bat runIde
+```
 
-[template]: https://github.com/JetBrains/intellij-platform-plugin-template
-[docs:plugin-description]: https://plugins.jetbrains.com/docs/intellij/plugin-user-experience.html#plugin-description-and-presentation
+## Known limitations
+
+- Mapping currently focuses on direct env var names in Helm template YAML.
+- Heavily templated env names (complex `{{ ... }}` composition) are not fully resolved.
+- YAML parsing for Spring key detection uses lightweight line/indent parsing.
+
+## Notes
+
+This repository started from the IntelliJ Platform Plugin Template and is now adapted for Spring/Helm variable navigation.

@@ -9,11 +9,15 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.yaml</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow factoryClass="com.github.kev007.intellijspringhelmenvhints.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
         <postStartupActivity implementation="com.github.kev007.intellijspringhelmenvhints.startup.MyProjectActivity" />
+        <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingGotoDeclarationHandler"/>
+        <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferenceContributor"/>
+        <referencesSearch implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferencesSearch"/>
     </extensions>
 </idea-plugin>
