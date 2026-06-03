@@ -11,9 +11,11 @@ IntelliJ plugin for navigating between Spring `application*.yml|yaml` configurat
 - `Go to Declaration` support via `EnvVarMappingGotoDeclarationHandler`.
 - PSI reference support via `EnvVarMappingReferenceContributor`.
 - `Find Usages` integration via `EnvVarMappingReferencesSearch` (synthetic soft references).
-- Inline YAML annotations via `EnvVarMappingAnnotator`:
-  - Matched mappings are underlined with informational tooltips.
-  - Missing mappings are marked as errors with explanatory tooltips.
+- Reference coloring via `EnvVarMappingAnnotator`:
+  - Spring: colors only the env var token inside `${ENV_VAR[:default]}`
+  - Helm: colors env var names under `spec.containers[*].env[*].name`
+  - matched and unmatched vars use different colors in both Spring and Helm
+  - does not add hover tooltips
 
 ## What navigation currently resolves
 
@@ -44,13 +46,13 @@ Set-Location "C:/workspace/intellij-spring-helm-env-hints"
 
 Current ZIP artifact name in this repo:
 
-- `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
+- `build/distributions/IntelliJ Spring Helm Env Hints-0.0.1.zip`
 
 ## Install in IntelliJ IDEA
 
 1. Open <kbd>Settings/Preferences</kbd> -> <kbd>Plugins</kbd>
 2. Click the gear icon -> <kbd>Install Plugin from Disk...</kbd>
-3. Select `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
+3. Select `build/distributions/IntelliJ Spring Helm Env Hints-0.0.1.zip`
 4. Restart IDE when prompted
 
 ## Development notes
