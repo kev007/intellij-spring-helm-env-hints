@@ -23,40 +23,29 @@ class EnvVarMappingGotoDeclarationHandler : GotoDeclarationHandler {
         val virtualFile = file.virtualFile ?: return null
         if (!EnvVarMappingSupport.isYamlFile(virtualFile)) return null
 
-        val project = sourceElement.project
+        val mappingTargets = EnvVarMappingSupport.resolveMappedTargets(file, virtualFile, offset)
 
-        val mappingTargets = if (EnvVarMappingSupport.isSpringApplicationFile(virtualFile)) {
-            val springKey = EnvVarMappingSupport.springKeyAtOffset(file.text, offset) ?: return null
-            val envVar = EnvVarMappingSupport.springKeyToEnvVarName(springKey)
-            EnvVarMappingSupport.findHelmEnvTargets(project, envVar)
-        } else if (EnvVarMappingSupport.isHelmTemplateFile(virtualFile)) {
-            val envVar = EnvVarMappingSupport.envVarAtOffset(file.text, offset) ?: return null
-            EnvVarMappingSupport.findSpringTargets(project, envVar)
-        } else {
-            return null
-        }
-
-        if (mappingTargets.isEmpty()) return null
-
-        mappingTargets.forEach { target ->
-            logger.debug("Found mapped declaration reference: ${targetKey(target)}")
-        }
-
-        val existingTargets = existingReferenceTargets(sourceElement, file, offset)
-        if (existingTargets.isEmpty()) {
-            logger.debug("Skipping mapped declaration targets at offset $offset because no existing declaration references were resolved")
-            return null
-        }
-
-        val mergedTargets = (existingTargets + mappingTargets)
-            .distinctBy { targetKey(it) }
-            .also { targets ->
-                targets.forEach { target ->
-                    logger.debug("Goto declaration target: ${targetKey(target)}")
-                }
+        if (mappingTargets.isNotEmpty()) {
+            mappingTargets.forEach { target ->
+                logger.debug("Found mapped declaration reference: ${targetKey(target)}")
             }
 
-        return mergedTargets.toTypedArray().takeIf { it.isNotEmpty() }
+            val existingTargets = existingReferenceTargets(sourceElement, file, offset)
+
+            val mergedTargets = (existingTargets + mappingTargets)
+                .distinctBy { targetKey(it) }
+                .also { targets ->
+                    targets.forEach { target ->
+                        logger.debug("Goto declaration target: ${targetKey(target)}")
+                    }
+                }
+
+            return mergedTargets.toTypedArray().takeIf { it.isNotEmpty() }
+        }
+
+        // If no mapped targets, still check existing references
+        val existingTargets = existingReferenceTargets(sourceElement, file, offset)
+        return existingTargets.toTypedArray().takeIf { it.isNotEmpty() }
     }
 
     private fun existingReferenceTargets(sourceElement: PsiElement, file: PsiFile, offset: Int): List<PsiElement> {

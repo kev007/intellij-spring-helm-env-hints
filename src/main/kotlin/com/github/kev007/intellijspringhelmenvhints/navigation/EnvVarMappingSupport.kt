@@ -6,11 +6,31 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
+import org.jetbrains.yaml.psi.YAMLFile
+import org.jetbrains.yaml.psi.YAMLKeyValue
+import org.jetbrains.yaml.psi.YAMLMapping
+import org.jetbrains.yaml.psi.YAMLSequence
+import org.jetbrains.yaml.psi.YAMLSequenceItem
+import org.jetbrains.yaml.psi.YAMLValue
 
 object EnvVarMappingSupport {
 
-    private val helmEnvNameRegex = Regex("""(?m)^\s*-?\s*name\s*:\s*[\"']?([A-Z][A-Z0-9_]*)[\"']?\s*$""")
     private val springKeyLineRegex = Regex("""^(\s*)([A-Za-z0-9_.-]+)\s*:\s*(.*)$""")
+    private val envVarRefRegex = Regex("""\$\{([A-Z][A-Z0-9_]*)(?::([^}]*))?\}""")
+
+    data class EnvVarUsage(
+        val element: PsiElement,
+        val relativePath: String,
+        val line: Int,
+        val value: String?,
+    )
+
+    data class EnvVarReferenceMatch(
+        val envVar: String,
+        val defaultValue: String?,
+        val startOffset: Int,
+        val endOffset: Int,
+    )
 
     fun isYamlFile(file: VirtualFile): Boolean {
         val name = file.name.lowercase()
@@ -68,28 +88,144 @@ object EnvVarMappingSupport {
         return null
     }
 
-    fun envVarAtOffset(text: String, offset: Int): String? {
-        helmEnvNameRegex.findAll(text).forEach { match ->
-            val range = match.groups[1]?.range ?: return@forEach
-            if (offset in range.first..range.last + 1) {
-                return match.groupValues[1]
+    fun envVarAtOffset(psiFile: PsiElement, offset: Int): String? {
+        return envVarFromPsiAtOffset(psiFile, offset)
+    }
+
+    fun envVarReferenceAtOffset(text: String, offset: Int): String? {
+        return envVarReferenceMatchAtOffset(text, offset)?.envVar
+    }
+
+    fun springEnvVarAtOffset(text: String, offset: Int): String? {
+        val keyEnvVar = springKeyAtOffset(text, offset)?.let(::springKeyToEnvVarName)
+        return keyEnvVar ?: envVarReferenceAtOffset(text, offset)
+    }
+
+    fun resolveMappedTargets(fileElement: PsiElement, virtualFile: VirtualFile, offset: Int): List<PsiElement> {
+        return when {
+            isSpringApplicationFile(virtualFile) -> {
+                val envVar = springEnvVarAtOffset(fileElement.text, offset) ?: return emptyList()
+                findHelmEnvTargets(fileElement.project, envVar)
             }
+
+            isHelmTemplateFile(virtualFile) -> {
+                val envVar = envVarAtOffset(fileElement, offset) ?: return emptyList()
+                findSpringTargets(fileElement.project, envVar)
+            }
+
+            else -> emptyList()
         }
+    }
+
+    fun envVarReferenceMatchAtOffset(text: String, offset: Int): EnvVarReferenceMatch? {
+        var currentOffset = 0
+        val lines = text.split('\n')
+
+        for (line in lines) {
+            val lineEnd = currentOffset + line.length
+            if (offset < currentOffset || offset > lineEnd) {
+                currentOffset = lineEnd + 1
+                continue
+            }
+
+            // Check if there's an env var reference in this line at the given offset
+            val matches = envVarRefRegex.findAll(line)
+            for (match in matches) {
+                val matchStart = currentOffset + match.range.first
+                val matchEnd = currentOffset + match.range.last + 1
+                if (offset in matchStart..matchEnd) {
+                    val defaultValue = match.groups[2]?.value?.takeIf { it.isNotBlank() }
+                    return EnvVarReferenceMatch(match.groupValues[1], defaultValue, matchStart, matchEnd)
+                }
+            }
+
+            currentOffset = lineEnd + 1
+        }
+
         return null
     }
 
+    private fun envVarFromPsiAtOffset(psiFile: PsiElement, offset: Int): String? {
+        val element = psiFile.findElementAt(offset) ?: return null
+
+        // Walk up the tree to find if we're in a "name" key value under spec.containers[*].env[*]
+        var current: PsiElement? = element
+        while (current != null) {
+            if (current is YAMLKeyValue && current.keyText == "name") {
+                return extractEnvVarValue(current)
+            }
+            current = current.parent
+        }
+
+        return null
+    }
+
+    private fun extractEnvVarValue(nameKeyValue: YAMLKeyValue): String? {
+        val value = nameKeyValue.value?.text?.trim('"', '\'') ?: return null
+
+        // Validate it looks like an env var (uppercase letters, numbers, underscores)
+        if (!value.matches(Regex("[A-Z][A-Z0-9_]*"))) return null
+
+        // Verify we're under spec.containers[*].env[*]
+        if (!isUnderEnvPath(nameKeyValue)) return null
+
+        return value
+    }
+
+    private fun isUnderEnvPath(element: PsiElement): Boolean {
+        var current: PsiElement? = element.parent
+        var foundEnv = false
+        var foundContainers = false
+
+        while (current != null) {
+            when (current) {
+                is YAMLKeyValue -> {
+                    when (current.keyText) {
+                        "env" -> foundEnv = true
+                        "containers" -> foundContainers = true
+                    }
+                }
+                is YAMLSequence -> {
+                    // Sequence under a key - check parent key
+                    val seqParent = current.parent
+                    if (seqParent is YAMLKeyValue) {
+                        when (seqParent.keyText) {
+                            "env" -> foundEnv = true
+                            "containers" -> foundContainers = true
+                        }
+                    }
+                }
+            }
+            current = current.parent
+        }
+
+        // Must be under both env and containers to be valid
+        return foundEnv && foundContainers
+    }
+
     fun findHelmEnvTargets(project: Project, envVar: String): List<PsiElement> {
+        return findHelmUsages(project, envVar).map { it.element }
+    }
+
+    fun findHelmUsages(project: Project, envVar: String): List<EnvVarUsage> {
         val psiManager = PsiManager.getInstance(project)
-        val targets = mutableListOf<PsiElement>()
+        val targets = mutableListOf<EnvVarUsage>()
 
         for (file in yamlFiles(project)) {
             if (!isHelmTemplateFile(file)) continue
-            val psiFile = psiManager.findFile(file) ?: continue
-            helmEnvNameRegex.findAll(psiFile.text).forEach { match ->
-                if (match.groupValues[1] == envVar) {
-                    val offset = match.groups[1]?.range?.first ?: match.range.first
-                    psiFile.findElementAt(offset)?.let { targets += it }
-                }
+            val psiFile = psiManager.findFile(file) as? YAMLFile ?: continue
+
+            val envNameEntries = collectHelmEnvNameEntries(psiFile)
+            for (nameKey in envNameEntries) {
+                val name = extractEnvVarValue(nameKey) ?: continue
+                if (name != envVar) continue
+                val valueElement = nameKey.value ?: continue
+                targets += EnvVarUsage(
+                    element = valueElement,
+                    relativePath = relativePath(project, file),
+                    line = lineNumber(psiFile.text, valueElement.textOffset),
+                    value = findSiblingYamlValue(nameKey, "value"),
+                )
             }
         }
 
@@ -97,21 +233,94 @@ object EnvVarMappingSupport {
     }
 
     fun findSpringTargets(project: Project, envVar: String): List<PsiElement> {
+        return findSpringUsages(project, envVar).map { it.element }
+    }
+
+    fun findSpringUsages(project: Project, envVar: String): List<EnvVarUsage> {
         val psiManager = PsiManager.getInstance(project)
-        val targets = mutableListOf<PsiElement>()
+        val targets = mutableListOf<EnvVarUsage>()
 
         for (file in yamlFiles(project)) {
             if (!isSpringApplicationFile(file)) continue
             val psiFile = psiManager.findFile(file) ?: continue
-            val occurrences = springKeyOccurrences(psiFile.text)
-            for (occurrence in occurrences) {
+            val text = psiFile.text
+
+            // Search for property keys that map to this env var
+            val keyOccurrences = springKeyOccurrences(text)
+            for (occurrence in keyOccurrences) {
                 if (springKeyToEnvVarName(occurrence.fullKey) == envVar) {
-                    psiFile.findElementAt(occurrence.keyOffset)?.let { targets += it }
+                    psiFile.findElementAt(occurrence.keyOffset)?.let { keyElement ->
+                        targets += EnvVarUsage(
+                            element = keyElement,
+                            relativePath = relativePath(project, file),
+                            line = lineNumber(text, occurrence.keyOffset),
+                            value = null,
+                        )
+                    }
                 }
+            }
+
+            // Also search for env var references in property values (e.g., ${POSTGRES_HOST:default})
+            val valueReferences = findEnvVarReferencesInValues(psiFile, file, envVar)
+            targets += valueReferences
+        }
+
+        return targets
+    }
+
+    private fun findEnvVarReferencesInValues(psiFile: PsiElement, file: VirtualFile, envVar: String): List<EnvVarUsage> {
+        val targets = mutableListOf<EnvVarUsage>()
+        val text = psiFile.text
+        envVarRefRegex.findAll(text).forEach { match ->
+            if (match.groupValues[1] != envVar) return@forEach
+            val varStartOffset = match.range.first + 2 // skip "${"
+            psiFile.findElementAt(varStartOffset)?.let { element ->
+                val defaultValue = match.groups[2]?.value?.takeIf { it.isNotBlank() }
+                targets += EnvVarUsage(element, relativePath(psiFile.project, file), lineNumber(text, varStartOffset), defaultValue)
             }
         }
 
         return targets
+    }
+
+    private fun collectHelmEnvNameEntries(element: PsiElement): List<YAMLKeyValue> {
+        val results = mutableListOf<YAMLKeyValue>()
+        fun walk(node: PsiElement) {
+            if (node is YAMLKeyValue && node.keyText == "name" && isUnderEnvPath(node)) {
+                results += node
+            }
+            node.children.forEach(::walk)
+        }
+        walk(element)
+        return results
+    }
+
+    private fun findSiblingYamlValue(nameKey: YAMLKeyValue, siblingKey: String): String? {
+        val mapping = nameKey.parent as? YAMLMapping ?: return null
+        return mapping.keyValues
+            .firstOrNull { it.keyText == siblingKey }
+            ?.value
+            ?.text
+            ?.trim()
+            ?.trim('"', '\'')
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun lineNumber(text: String, offset: Int): Int {
+        val safeOffset = offset.coerceIn(0, text.length)
+        return text.substring(0, safeOffset).count { it == '\n' } + 1
+    }
+
+    private fun relativePath(project: Project, file: VirtualFile): String {
+        val path = file.path.replace('\\', '/')
+        val roots = ProjectRootManager.getInstance(project).contentRootsFromAllModules
+        for (root in roots) {
+            val rootPath = root.path.replace('\\', '/')
+            if (path.startsWith("$rootPath/")) {
+                return path.removePrefix("$rootPath/")
+            }
+        }
+        return file.name
     }
 
     private fun yamlFiles(project: Project): List<VirtualFile> {

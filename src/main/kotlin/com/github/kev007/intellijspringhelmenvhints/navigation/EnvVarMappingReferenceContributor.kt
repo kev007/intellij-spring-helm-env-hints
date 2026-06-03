@@ -11,6 +11,7 @@ import com.intellij.psi.PsiReferenceRegistrar
 import com.intellij.psi.PsiPolyVariantReferenceBase
 import com.intellij.psi.ResolveResult
 import com.intellij.psi.PsiElementResolveResult
+import com.intellij.openapi.project.Project
 import com.intellij.util.ProcessingContext
 import org.jetbrains.yaml.YAMLLanguage
 
@@ -32,14 +33,13 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
         if (!EnvVarMappingSupport.isYamlFile(virtualFile)) return PsiReference.EMPTY_ARRAY
 
         if (EnvVarMappingSupport.isSpringApplicationFile(virtualFile)) {
-            val springKey = EnvVarMappingSupport.springKeyAtOffset(file.text, element.textOffset) ?: return PsiReference.EMPTY_ARRAY
-            val envVar = EnvVarMappingSupport.springKeyToEnvVarName(springKey)
-            return arrayOf(EnvVarMappingPsiReference(element, envVar, MappingDirection.SPRING_TO_HELM))
+            val envVar = EnvVarMappingSupport.springEnvVarAtOffset(file.text, element.textOffset) ?: return PsiReference.EMPTY_ARRAY
+            return arrayOf(EnvVarMappingPsiReference(element, envVar, EnvVarMappingSupport::findHelmEnvTargets))
         }
 
         if (EnvVarMappingSupport.isHelmTemplateFile(virtualFile)) {
-            val envVar = EnvVarMappingSupport.envVarAtOffset(file.text, element.textOffset) ?: return PsiReference.EMPTY_ARRAY
-            return arrayOf(EnvVarMappingPsiReference(element, envVar, MappingDirection.HELM_TO_SPRING))
+            val envVar = EnvVarMappingSupport.envVarAtOffset(file, element.textOffset) ?: return PsiReference.EMPTY_ARRAY
+            return arrayOf(EnvVarMappingPsiReference(element, envVar, EnvVarMappingSupport::findSpringTargets))
         }
 
         return PsiReference.EMPTY_ARRAY
@@ -49,17 +49,13 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
 private class EnvVarMappingPsiReference(
     element: PsiElement,
     private val mappedName: String,
-    private val direction: MappingDirection,
+    private val targetResolver: (Project, String) -> List<PsiElement>,
 ) : PsiPolyVariantReferenceBase<PsiElement>(element, TextRange(0, element.textLength), false) {
 
     private val logger = thisLogger()
 
     override fun multiResolve(incompleteCode: Boolean): Array<ResolveResult> {
-        val project = element.project
-        val targets = when (direction) {
-            MappingDirection.SPRING_TO_HELM -> EnvVarMappingSupport.findHelmEnvTargets(project, mappedName)
-            MappingDirection.HELM_TO_SPRING -> EnvVarMappingSupport.findSpringTargets(project, mappedName)
-        }
+        val targets = targetResolver(element.project, mappedName)
 
         targets.forEach { target ->
             val path = target.containingFile?.virtualFile?.path ?: "<no-file>"
@@ -72,8 +68,4 @@ private class EnvVarMappingPsiReference(
     override fun getVariants(): Array<Any> = emptyArray()
 }
 
-private enum class MappingDirection {
-    SPRING_TO_HELM,
-    HELM_TO_SPRING,
-}
 

@@ -1,97 +1,60 @@
 # intellij-spring-helm-env-hints
 
-IntelliJ plugin that links Spring `application.yaml` properties and Helm container environment variables so you can navigate between both sides.
+IntelliJ plugin for navigating between Spring `application*.yml|yaml` configuration and Helm template env vars under `templates/`.
 
-## What it does
+## Current implementation (as of 2026-06-03)
 
-- `Go to Declaration` / `Go to Usage` style navigation between:
-  - Spring keys in `application*.yml` or `application*.yaml`
-  - Helm env vars (`name: MY_ENV_VAR`) in files under `/templates/`
-- Bidirectional mapping support:
-  - `my.service.url` -> `MY_SERVICE_URL`
-  - `MY_SERVICE_URL` -> `my.service.url`
-- PSI references for YAML content to improve IDE navigation behavior.
+- Bidirectional YAML navigation between:
+  - Spring keys and env vars derived from those keys
+  - Spring `${ENV_VAR[:default]}` value references
+  - Helm `spec.containers[*].env[*].name` entries
+- `Go to Declaration` support via `EnvVarMappingGotoDeclarationHandler`.
+- PSI reference support via `EnvVarMappingReferenceContributor`.
+- `Find Usages` integration via `EnvVarMappingReferencesSearch` (synthetic soft references).
+- Inline YAML annotations via `EnvVarMappingAnnotator`:
+  - Matched mappings are underlined with informational tooltips.
+  - Missing mappings are marked as errors with explanatory tooltips.
 
-## Implemented features
+## What navigation currently resolves
 
-- `GotoDeclarationHandler` integration for mapped variables.
-- `PsiReferenceContributor` for YAML-based cross-file references.
-- `ReferencesSearch` query executor to support cross-name usage lookups.
-- Tests covering both directions:
-  - Spring -> Helm
-  - Helm -> Spring
+- Spring -> Helm
+  - From a Spring property key (for example `my.service.url` -> `MY_SERVICE_URL`).
+  - From a Spring env placeholder in a value (for example `${POSTGRES_HOST:localhost}`).
+- Helm -> Spring
+  - From Helm `name: SOME_ENV_VAR` entries under `spec.containers[*].env[*]`.
+- `Find Usages`
+  - Uses cross-mapping logic to return mapped elements as usage references.
 
-## Current matching rules
+## Plugin wiring
 
-- Spring files are detected by filename starting with `application` and extension `.yml` or `.yaml`.
-- Helm files are detected by path containing `/templates/` and extension `.yml` or `.yaml`.
-- Helm env vars are matched on lines like:
-  - `name: MY_ENV_VAR`
-  - `- name: MY_ENV_VAR`
-- Spring key normalization:
-  - Non-alphanumeric characters become `_`
-  - Repeated `_` are collapsed
-  - Result is uppercased
+- Extension registrations are in `src/main/resources/META-INF/plugin.xml`:
+  - `gotoDeclarationHandler`: `EnvVarMappingGotoDeclarationHandler`
+  - `psi.referenceContributor` (yaml): `EnvVarMappingReferenceContributor`
+  - `annotator` (yaml): `EnvVarMappingAnnotator`
+  - `referencesSearch`: `EnvVarMappingReferencesSearch`
 
-## Project structure (key files)
 
-- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingSupport.kt`
-- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingGotoDeclarationHandler.kt`
-- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingReferenceContributor.kt`
-- `src/main/kotlin/com/github/kev007/intellijspringhelmenvhints/navigation/EnvVarMappingReferencesSearch.kt`
-- `src/main/resources/META-INF/plugin.xml`
-
-## Packaging
-
-Build the installable plugin ZIP:
+## Build and run
 
 ```powershell
 Set-Location "C:/workspace/intellij-spring-helm-env-hints"
 ./gradlew.bat buildPlugin
+./gradlew.bat runIde
 ```
 
-Generated artifact:
+Current ZIP artifact name in this repo:
 
 - `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
 
-## Installation
-
-Install the ZIP in IntelliJ IDEA:
+## Install in IntelliJ IDEA
 
 1. Open <kbd>Settings/Preferences</kbd> -> <kbd>Plugins</kbd>
 2. Click the gear icon -> <kbd>Install Plugin from Disk...</kbd>
 3. Select `build/distributions/IntelliJ Platform Plugin Template-0.0.1.zip`
-4. Restart the IDE when prompted
+4. Restart IDE when prompted
 
-## Local development
+## Development notes
 
-Run focused feature tests:
-
-```powershell
-Set-Location "C:/workspace/intellij-spring-helm-env-hints"
-./gradlew.bat test --tests "*EnvVarMappingGotoDeclarationHandlerTest" --tests "*EnvVarMappingReferenceContributorTest"
-```
-
-Run all tests:
-
-```powershell
-Set-Location "C:/workspace/intellij-spring-helm-env-hints"
-./gradlew.bat test
-```
-
-Run the plugin in sandbox IDE:
-
-```powershell
-Set-Location "C:/workspace/intellij-spring-helm-env-hints"
-./gradlew.bat runIde
-```
-
-## Known limitations
-
-- Mapping currently focuses on direct env var names in Helm template YAML.
-- Heavily templated env names (complex `{{ ... }}` composition) are not fully resolved.
-- YAML parsing for Spring key detection uses lightweight line/indent parsing.
-
-## Notes
-
-This repository started from the IntelliJ Platform Plugin Template and is now adapted for Spring/Helm variable navigation.
+- IntelliJ platform target in Gradle: `2025.2.6.2`.
+- YAML plugin dependency: `org.jetbrains.plugins.yaml` (bundled).
+- This repository still carries template defaults (for example root project name/artifact naming).
