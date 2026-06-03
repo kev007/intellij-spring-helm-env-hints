@@ -1,5 +1,6 @@
 package com.github.kev007.intellijspringhelmenvhints.navigation
 
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.util.TextRange
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiElement
@@ -51,11 +52,18 @@ private class EnvVarMappingPsiReference(
     private val direction: MappingDirection,
 ) : PsiPolyVariantReferenceBase<PsiElement>(element, TextRange(0, element.textLength), false) {
 
+    private val logger = thisLogger()
+
     override fun multiResolve(incompleteCode: Boolean): Array<ResolveResult> {
         val project = element.project
         val targets = when (direction) {
             MappingDirection.SPRING_TO_HELM -> EnvVarMappingSupport.findHelmEnvTargets(project, mappedName)
             MappingDirection.HELM_TO_SPRING -> EnvVarMappingSupport.findSpringTargets(project, mappedName)
+        }
+
+        targets.forEach { target ->
+            val path = target.containingFile?.virtualFile?.path ?: "<no-file>"
+            logger.debug("Resolved mapping reference '$mappedName' to $path:${target.textRange?.startOffset ?: -1}")
         }
 
         return targets.map { PsiElementResolveResult(it) }.toTypedArray()

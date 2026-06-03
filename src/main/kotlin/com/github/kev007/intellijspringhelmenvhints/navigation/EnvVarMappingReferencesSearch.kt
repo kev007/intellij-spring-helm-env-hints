@@ -1,12 +1,15 @@
 package com.github.kev007.intellijspringhelmenvhints.navigation
 
 import com.intellij.openapi.application.QueryExecutorBase
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.util.Processor
 
 class EnvVarMappingReferencesSearch : QueryExecutorBase<PsiReference, ReferencesSearch.SearchParameters>(true) {
+
+    private val logger = thisLogger()
 
     override fun processQuery(
         queryParameters: ReferencesSearch.SearchParameters,
@@ -49,6 +52,7 @@ class EnvVarMappingReferencesSearch : QueryExecutorBase<PsiReference, References
 
                 val key = "${source.containingFile.virtualFile.path}:${reference.rangeInElement.startOffset}:${reference.rangeInElement.endOffset}"
                 if (seen.add(key)) {
+                    logger.debug("Found mapping reference: $key -> ${target.containingFile.virtualFile.path}:${target.textRange?.startOffset ?: -1}")
                     consumer.process(reference)
                 }
             }
