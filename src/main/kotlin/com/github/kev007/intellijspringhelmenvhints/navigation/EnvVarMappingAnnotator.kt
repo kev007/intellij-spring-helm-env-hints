@@ -1,5 +1,7 @@
 package com.github.kev007.intellijspringhelmenvhints.navigation
 
+import com.github.kev007.intellijspringhelmenvhints.core.EnvVarMappingCore
+import com.github.kev007.intellijspringhelmenvhints.models.MappingStatus
 import com.intellij.lang.annotation.Annotator
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
@@ -11,6 +13,7 @@ import com.intellij.ui.JBColor
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import java.awt.Font
 
+/** Color for env vars that have corresponding definitions in both Spring and Helm. */
 private val MATCHED_REFERENCE_COLOR = TextAttributes(
     JBColor(0x0B57D0, 0x7FB2FF),
     null,
@@ -19,6 +22,7 @@ private val MATCHED_REFERENCE_COLOR = TextAttributes(
     Font.PLAIN,
 )
 
+/** Color for env vars that exist in only one file system. */
 private val UNMATCHED_REFERENCE_COLOR = TextAttributes(
     JBColor(0xD93025, 0xFF8A80),
     null,
@@ -37,14 +41,14 @@ class EnvVarMappingAnnotator : Annotator {
         if (keyValue.value != element) return
 
         when {
-            EnvVarMappingSupport.isSpringApplicationFile(virtualFile) -> annotateSpringValue(element, holder)
-            EnvVarMappingSupport.isHelmTemplateFile(virtualFile) -> annotateHelmValue(element, holder)
+            EnvVarMappingCore.isSpringApplicationFile(virtualFile) -> annotateSpringValue(element, holder)
+            EnvVarMappingCore.isHelmTemplateFile(virtualFile) -> annotateHelmValue(element, holder)
         }
     }
 
     private fun annotateSpringValue(element: PsiElement, holder: AnnotationHolder) {
         val valueRange = element.textRange ?: return
-        EnvVarMappingSupport.envVarReferenceSpansInRange(
+        EnvVarMappingCore.envVarReferenceSpansInRange(
             text = element.containingFile.text,
             startOffset = valueRange.startOffset,
             endOffset = valueRange.endOffset,
@@ -58,7 +62,7 @@ class EnvVarMappingAnnotator : Annotator {
     }
 
     private fun annotateHelmValue(element: PsiElement, holder: AnnotationHolder) {
-        val span = EnvVarMappingSupport.helmEnvNameSpan(element) ?: return
+        val span = EnvVarMappingCore.helmEnvNameSpan(element) ?: return
         annotateRange(
             holder = holder,
             range = TextRange(span.startOffset, span.endOffset),
@@ -66,10 +70,10 @@ class EnvVarMappingAnnotator : Annotator {
         )
     }
 
-    private fun annotateRange(holder: AnnotationHolder, range: TextRange, status: EnvVarMappingSupport.MappingStatus) {
+    private fun annotateRange(holder: AnnotationHolder, range: TextRange, status: MappingStatus) {
         val attributes = when (status) {
-            EnvVarMappingSupport.MappingStatus.MATCHED -> MATCHED_REFERENCE_COLOR
-            EnvVarMappingSupport.MappingStatus.UNMATCHED -> UNMATCHED_REFERENCE_COLOR
+            MappingStatus.MATCHED -> MATCHED_REFERENCE_COLOR
+            MappingStatus.UNMATCHED -> UNMATCHED_REFERENCE_COLOR
         }
 
         holder.newSilentAnnotation(HighlightSeverity.INFORMATION)

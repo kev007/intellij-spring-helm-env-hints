@@ -11,6 +11,7 @@ IntelliJ plugin for navigating between Spring `application*.yml|yaml` configurat
 - `Go to Declaration` support via `EnvVarMappingGotoDeclarationHandler`.
 - PSI reference support via `EnvVarMappingReferenceContributor`.
 - `Find Usages` integration via `EnvVarMappingReferencesSearch` (synthetic soft references).
+- Global env-var tracking across Spring and Helm YAML files to back cross-file rename/navigation consistency.
 - Reference coloring via `EnvVarMappingAnnotator`:
   - Spring: colors only the env var token inside `${ENV_VAR[:default]}`
   - Helm: colors env var names under `spec.containers[*].env[*].name`
@@ -24,6 +25,8 @@ IntelliJ plugin for navigating between Spring `application*.yml|yaml` configurat
   - From a Spring env placeholder in a value (for example `${POSTGRES_HOST:localhost}`).
 - Helm -> Spring
   - From Helm `name: SOME_ENV_VAR` entries under `spec.containers[*].env[*]`.
+- Refactor -> Rename
+  - Renaming env vars updates mapped Spring/Helm references via PSI references built on tracked global env-var entries.
 - `Find Usages`
   - Uses cross-mapping logic to return mapped elements as usage references.
 

@@ -1,7 +1,7 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>com.github.kev007.intellijspringhelmenvhints</id>
-    <name>intellij-spring-helm-env-hints</name>
+    <name>Spring Helm Env Hints</name>
     <vendor>kev007</vendor>
     <description><![CDATA[
         <p><b>intellij-spring-helm-env-hints</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
@@ -14,9 +14,13 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
+        <projectService serviceImplementation="com.github.kev007.intellijspringhelmenvhints.services.EnvVarRegistryService"/>
         <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingGotoDeclarationHandler"/>
         <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferenceContributor"/>
         <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingAnnotator"/>
+        <findUsagesHandlerFactory implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingFindUsagesHandlerFactory"/>
+        <lang.findUsagesProvider language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingFindUsagesProvider"/>
+        <completion.contributor language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingCompletionContributor"/>
         <referencesSearch implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferencesSearch"/>
     </extensions>
 </idea-plugin>
