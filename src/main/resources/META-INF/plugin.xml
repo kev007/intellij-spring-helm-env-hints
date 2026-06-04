@@ -18,9 +18,6 @@
         <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingGotoDeclarationHandler"/>
         <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferenceContributor"/>
         <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingAnnotator"/>
-        <findUsagesHandlerFactory implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingFindUsagesHandlerFactory"/>
-        <lang.findUsagesProvider language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingFindUsagesProvider"/>
-        <completion.contributor language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingCompletionContributor"/>
-        <referencesSearch implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferencesSearch"/>
+
     </extensions>
 </idea-plugin>

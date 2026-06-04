@@ -2,7 +2,6 @@ package com.github.kev007.intellijspringhelmenvhints.services
 
 import com.github.kev007.intellijspringhelmenvhints.core.EnvVarMappingCore
 import com.github.kev007.intellijspringhelmenvhints.models.EnvVarEntry
-import com.github.kev007.intellijspringhelmenvhints.models.EnvVarSuggestion
 import com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingPsiUtils
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
@@ -26,7 +25,7 @@ import org.jetbrains.yaml.psi.YAMLKeyValue
  * - Spring keys: property key paths normalized to env var names
  * - Spring references: `${ENV_VAR}` patterns inside Spring property values
  *
- * Consumers (annotator, completion, reference contributor, find-usages)
+ * Consumers (annotator, reference contributor, goto declaration)
  * call [getInstance] and query this service instead of rebuilding the index on each call.
  */
 @Service(Service.Level.PROJECT)
@@ -41,13 +40,7 @@ class EnvVarRegistryService(private val project: Project) {
 
     // ─── Public query API ─────────────────────────────────────────────────────
 
-    fun getEntry(envVar: String): EnvVarEntry? = index()[envVar]
-
     fun getHelmValues(envVar: String): List<PsiElement> = index()[envVar]?.helmValues.orEmpty()
-
-    fun getSpringKeys(envVar: String): List<PsiElement> = index()[envVar]?.springKeys.orEmpty()
-
-    fun getSpringValueRefs(envVar: String): List<PsiElement> = index()[envVar]?.springValueRefs.orEmpty()
 
     /**
      * Returns all Spring targets (keys + value references) for an env var,
@@ -57,17 +50,6 @@ class EnvVarRegistryService(private val project: Project) {
         val entry = index()[envVar] ?: return emptyList()
         return EnvVarMappingPsiUtils.distinctTargets(entry.springKeys + entry.springValueRefs)
     }
-
-    fun getAllEnvVarNames(): Set<String> = index().keys
-
-    /**
-     * Returns all known env vars sorted by usage count ascending (unused first),
-     * then alphabetically for deterministic results.
-     */
-    fun getSuggestions(): List<EnvVarSuggestion> =
-        index().values
-            .map { EnvVarSuggestion(it.name, it.totalCount) }
-            .sortedWith(compareBy<EnvVarSuggestion> { it.usageCount }.thenBy { it.envVar })
 
     fun isHelmMatched(envVar: String): Boolean = index()[envVar]?.springCount?.let { it > 0 } ?: false
 
@@ -141,8 +123,8 @@ class EnvVarRegistryService(private val project: Project) {
         val text = file.text
 
         EnvVarMappingCore.springKeyOccurrences(text).forEach { occurrence ->
-            val envVar = EnvVarMappingCore.springKeyToEnvVarName(occurrence.fullKey)
-            file.findElementAt(occurrence.keyOffset)?.let { springKeys.add(envVar, it) }
+            val normalized = EnvVarMappingCore.springKeyToEnvVarName(occurrence.fullKey)
+            file.findElementAt(occurrence.keyOffset)?.let { springKeys.add(normalized, it) }
         }
 
         EnvVarMappingCore.envVarRefRegex.findAll(text).forEach { match ->
@@ -177,5 +159,3 @@ class EnvVarRegistryService(private val project: Project) {
         return results
     }
 }
-
-

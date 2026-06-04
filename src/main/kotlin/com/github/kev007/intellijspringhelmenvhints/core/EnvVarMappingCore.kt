@@ -1,7 +1,6 @@
 package com.github.kev007.intellijspringhelmenvhints.core
 
 import com.github.kev007.intellijspringhelmenvhints.models.*
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
 import com.intellij.openapi.util.TextRange as IdeaTextRange
@@ -22,6 +21,8 @@ import org.jetbrains.yaml.psi.YAMLSequence
 object EnvVarMappingCore {
 
     private val springKeyLineRegex = Regex("""^(\s*)([A-Za-z0-9_.-]+)\s*:\s*(.*)$""")
+    private val nonAlphaNumRegex = Regex("""[^A-Za-z0-9]""")
+    private val repeatedUnderscoreRegex = Regex("""_+""")
 
     /** Regex for matching ${ENV_VAR} and ${ENV_VAR:default} patterns in Spring values. */
     val envVarRefRegex = Regex("""\$\{([^}:\s]+)(?::([^}]*))?}""")
@@ -53,8 +54,8 @@ object EnvVarMappingCore {
         val normalized = key
             .replace("[", "_")
             .replace("]", "")
-            .replace(Regex("[^A-Za-z0-9]"), "_")
-            .replace(Regex("_+"), "_")
+            .replace(nonAlphaNumRegex, "_")
+            .replace(repeatedUnderscoreRegex, "_")
             .trim('_')
         return normalized.uppercase()
     }
@@ -139,10 +140,10 @@ object EnvVarMappingCore {
         }.toList()
     }
 
-    fun envVarReferenceSpanAtOffset(text: String, offset: Int): EnvVarReferenceSpan? =
+    private fun envVarReferenceSpanAtOffset(text: String, offset: Int): EnvVarReferenceSpan? =
         envVarReferenceSpansInRange(text, offset, offset + 1).firstOrNull()
 
-    fun envVarReferenceAtOffset(text: String, offset: Int): String? =
+    private fun envVarReferenceAtOffset(text: String, offset: Int): String? =
         envVarReferenceSpanAtOffset(text, offset)?.envVar
 
     /**
@@ -202,7 +203,7 @@ object EnvVarMappingCore {
 
     // ─── PSI navigation helpers ───────────────────────────────────────────────
 
-    fun findEnclosingKeyValue(element: PsiElement): YAMLKeyValue? {
+    private fun findEnclosingKeyValue(element: PsiElement): YAMLKeyValue? {
         var current: PsiElement? = element
         while (current != null) {
             if (current is YAMLKeyValue) return current
@@ -229,17 +230,17 @@ object EnvVarMappingCore {
         return when {
             isSpringApplicationFile(virtualFile) -> {
                 val valueElement = keyValue.value
+                val refs = springEnvReferencesInValue(keyValue)
                 // If the cursor is inside the value part, look for ${ENV_VAR} references first.
                 if (valueElement != null &&
                     element.textRange.startOffset >= valueElement.textRange.startOffset
                 ) {
-                    val refs = springEnvReferencesInValue(keyValue)
                     if (refs.isNotEmpty()) return refs.first().envVar
                 }
                 // Derive env var from the key path at the key element's offset.
                 keyValue.key?.let { springKeyAtOffset(file.text, it.textOffset) }
                     ?.let(::springKeyToEnvVarName)
-                    ?: springEnvReferencesInValue(keyValue).firstOrNull()?.envVar
+                    ?: refs.firstOrNull()?.envVar
             }
 
             isHelmTemplateFile(virtualFile) ->
@@ -249,15 +250,6 @@ object EnvVarMappingCore {
         }
     }
 
-    /**
-     * Finds the target element for a Find Usages operation.
-     * Returns the enclosing YAMLKeyValue if an env var is found at the element.
-     */
-    fun findUsagesTarget(element: PsiElement): PsiElement? {
-        val envVar = envVarForElement(element) ?: return null
-        if (envVar.isBlank()) return null
-        return findEnclosingKeyValue(element)
-    }
 
     /**
      * Extracts an env var reference from a Helm `name:` key at the given caret offset.
@@ -274,23 +266,6 @@ object EnvVarMappingCore {
         return null
     }
 
-    /**
-     * Constructs a mapping query for cross-file navigation.
-     * Spring files resolve to Helm targets, and Helm files resolve to Spring targets.
-     */
-    fun mappingQueryAtOffset(fileElement: PsiElement, virtualFile: VirtualFile, offset: Int, targetResolver: (Project, String) -> List<PsiElement>): MappingQuery? {
-        return when {
-            isSpringApplicationFile(virtualFile) -> {
-                val envVar = springEnvVarAtOffset(fileElement.text, offset) ?: return null
-                MappingQuery(envVar, targetResolver)
-            }
-            isHelmTemplateFile(virtualFile) -> {
-                val envVar = envVarAtOffset(fileElement, offset) ?: return null
-                MappingQuery(envVar, targetResolver)
-            }
-            else -> null
-        }
-    }
 
     // ─── Extraction helpers for Helm env var values ────────────────────────────
 

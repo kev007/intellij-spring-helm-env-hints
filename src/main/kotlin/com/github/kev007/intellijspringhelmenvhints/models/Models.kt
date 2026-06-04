@@ -1,6 +1,5 @@
 package com.github.kev007.intellijspringhelmenvhints.models
 
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 
@@ -34,15 +33,6 @@ data class EnvVarRefAtOffset(
 )
 
 /**
- * Query descriptor for resolving an env var to its mapped targets in another file system.
- * Encapsulates the env var name and the target resolver function (Spring→Helm or Helm→Spring).
- */
-data class MappingQuery(
-    val envVar: String,
-    val targetResolver: (Project, String) -> List<PsiElement>,
-)
-
-/**
  * A single environment variable entry tracked by the registry service.
  * Contains references to all PSI elements across Spring application YAMLs and Helm templates
  * that define or reference this env var.
@@ -58,26 +48,8 @@ data class EnvVarEntry(
 ) {
     val helmCount: Int get() = helmValues.size
     val springCount: Int get() = springKeys.size + springValueRefs.size
-    val totalCount: Int get() = helmValues.size + springKeys.size + springValueRefs.size
-
-    /** All PSI elements that represent a *definition* of this env var. */
-    fun definitions(): List<PsiElement> = helmValues + springKeys
-
-    /** All PSI elements that represent a *usage/reference* to this env var. */
-    fun usages(): List<PsiElement> = springValueRefs + helmValues
-
-    /** All tracked PSI elements across both file types. */
-    fun allElements(): List<PsiElement> = helmValues + springKeys + springValueRefs
 }
 
-/**
- * Autocomplete suggestion for an env var.
- * Used by the completion contributor to suggest env vars in order of popularity.
- */
-data class EnvVarSuggestion(
-    val envVar: String,
-    val usageCount: Int,
-)
 
 // Internal helpers for Spring YAML parsing
 internal data class IndentKey(val indent: Int, val key: String)
