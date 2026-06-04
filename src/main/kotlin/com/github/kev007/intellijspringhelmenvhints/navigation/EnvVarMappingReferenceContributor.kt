@@ -1,6 +1,8 @@
 package com.github.kev007.intellijspringhelmenvhints.navigation
 
 import com.github.kev007.intellijspringhelmenvhints.core.EnvVarMappingCore
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.patterns.PlatformPatterns
@@ -21,6 +23,8 @@ import org.jetbrains.yaml.YAMLLanguage
  *
  * For Spring values: creates references to Helm env names
  * For Helm env names: creates references to Spring property keys
+ *
+ * References are scoped to the source element's own module — no cross-module resolution.
  * This enables navigation with Ctrl+Click, rename with Shift+F6, and highlight usages.
  */
 class EnvVarMappingReferenceContributor : PsiReferenceContributor() {
@@ -33,6 +37,8 @@ class EnvVarMappingReferenceContributor : PsiReferenceContributor() {
     }
 }
 
+private val LOG = Logger.getInstance(EnvVarMappingReferenceContributor::class.java)
+
 private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
 
     override fun getReferencesByElement(element: PsiElement, context: ProcessingContext): Array<PsiReference> {
@@ -43,6 +49,8 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
         val virtualFile = file.virtualFile ?: return PsiReference.EMPTY_ARRAY
         if (!EnvVarMappingCore.isYamlFile(virtualFile)) return PsiReference.EMPTY_ARRAY
 
+        val sourceModule = ModuleUtil.findModuleForPsiElement(element)
+
         if (EnvVarMappingCore.isSpringApplicationFile(virtualFile)) {
             // Spring values: ${ENV_VAR} → Helm env names
             val ref = EnvVarMappingCore.springEnvReferenceAtOffset(element, element.textOffset)
@@ -52,7 +60,9 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
                     element = element,
                     mappedName = ref.envVar,
                     rangeInElement = ref.rangeInElement,
-                    targetResolver = EnvVarMappingSupport::findHelmEnvTargets,
+                    targetResolver = { proj, name ->
+                        EnvVarMappingSupport.findHelmEnvTargets(proj, sourceModule, name)
+                    },
                 ),
             )
         }
@@ -69,7 +79,9 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
                     element = element,
                     mappedName = span.envVar,
                     rangeInElement = range,
-                    targetResolver = EnvVarMappingSupport::findSpringTargets,
+                    targetResolver = { proj, name ->
+                        EnvVarMappingSupport.findSpringTargets(proj, sourceModule, name)
+                    },
                 ),
             )
         }
@@ -79,8 +91,8 @@ private class EnvVarMappingReferenceProvider : PsiReferenceProvider() {
 }
 
 /**
- * A cross-file reference from a Spring or Helm env var to the opposite file system.
- * Supports rename/refactor and resolves to all matching targets.
+ * A module-scoped reference from a Spring or Helm env var to the opposite file system.
+ * Supports rename/refactor and resolves to all matching targets within the same module.
  */
 private class EnvVarMappingPsiReference(
     element: PsiElement,
@@ -90,16 +102,13 @@ private class EnvVarMappingPsiReference(
 ) : PsiPolyVariantReferenceBase<PsiElement>(element, rangeInElement, false) {
 
     override fun multiResolve(incompleteCode: Boolean): Array<ResolveResult> {
-        return targetResolver(element.project, mappedName)
-            .map(::PsiElementResolveResult)
-            .toTypedArray()
+        val targets = targetResolver(element.project, mappedName)
+        if (targets.isNotEmpty()) LOG.info("[$mappedName] reference resolved to ${targets.size} target(s)")
+        return targets.map(::PsiElementResolveResult).toTypedArray()
     }
 
-    override fun handleElementRename(newElementName: String): PsiElement {
-        return ElementManipulators.handleContentChange(element, rangeInElement, newElementName)
-    }
+    override fun handleElementRename(newElementName: String): PsiElement =
+        ElementManipulators.handleContentChange(element, rangeInElement, newElementName)
 
     override fun getVariants(): Array<Any> = emptyArray()
 }
-
-

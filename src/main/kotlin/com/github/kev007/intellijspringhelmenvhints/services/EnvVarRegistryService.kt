@@ -4,8 +4,11 @@ import com.github.kev007.intellijspringhelmenvhints.core.EnvVarMappingCore
 import com.github.kev007.intellijspringhelmenvhints.models.EnvVarEntry
 import com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingPsiUtils
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.module.Module
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectRootManager
+import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
@@ -17,21 +20,18 @@ import org.jetbrains.yaml.psi.YAMLFile
 import org.jetbrains.yaml.psi.YAMLKeyValue
 
 /**
- * Project service that maintains a live, PSI-invalidated index of every env var
+ * Project service that maintains a live, PSI-invalidated, per-module index of every env var
  * defined in Helm templates and referenced in Spring application YAML files.
  *
- * The service scans all YAML files in the project and extracts:
- * - Helm env names: `containers[].env[].name:` values
- * - Spring keys: property key paths normalized to env var names
- * - Spring references: `${ENV_VAR}` patterns inside Spring property values
+ * The index is keyed by [Module] so that reference resolution never crosses module boundaries.
  *
- * Consumers (annotator, reference contributor, goto declaration)
- * call [getInstance] and query this service instead of rebuilding the index on each call.
+ * Consumers (annotator, reference contributor, goto declaration) call [getInstance] and supply
+ * the source [Module] when querying so only same-module targets are returned.
  */
 @Service(Service.Level.PROJECT)
 class EnvVarRegistryService(private val project: Project) {
 
-    // ─── Service access ───────────────────────────────────────────────────────
+    private val LOG = Logger.getInstance(EnvVarRegistryService::class.java)
 
     companion object {
         fun getInstance(project: Project): EnvVarRegistryService =
@@ -40,122 +40,112 @@ class EnvVarRegistryService(private val project: Project) {
 
     // ─── Public query API ─────────────────────────────────────────────────────
 
-    fun getHelmValues(envVar: String): List<PsiElement> = index()[envVar]?.helmValues.orEmpty()
+    fun getHelmValues(envVar: String, module: Module?): List<PsiElement> =
+        moduleEntries(module, envVar)?.helmValues.orEmpty().also { targets ->
+            if (targets.isNotEmpty()) LOG.info("[$envVar] resolved ${targets.size} Helm target(s) in module '${module?.name}'")
+        }
 
-    /**
-     * Returns all Spring targets (keys + value references) for an env var,
-     * deduped to ensure each unique PSI element appears only once.
-     */
-    fun getAllSpringTargets(envVar: String): List<PsiElement> {
-        val entry = index()[envVar] ?: return emptyList()
-        return EnvVarMappingPsiUtils.distinctTargets(entry.springKeys + entry.springValueRefs)
+    fun getAllSpringTargets(envVar: String, module: Module?): List<PsiElement> {
+        val entry = moduleEntries(module, envVar) ?: return emptyList()
+        return EnvVarMappingPsiUtils.distinctTargets(entry.springKeys + entry.springValueRefs).also { targets ->
+            if (targets.isNotEmpty()) LOG.info("[$envVar] resolved ${targets.size} Spring target(s) in module '${module?.name}'")
+        }
     }
 
-    fun isHelmMatched(envVar: String): Boolean = index()[envVar]?.springCount?.let { it > 0 } ?: false
+    /** True when the Helm env var [envVar] has at least one matching Spring target in [module]. */
+    fun isHelmMatched(envVar: String, module: Module?): Boolean =
+        (moduleEntries(module, envVar)?.springCount ?: 0) > 0
 
-    fun isSpringMatched(envVar: String): Boolean = index()[envVar]?.helmCount?.let { it > 0 } ?: false
+    /** True when the Spring env var [envVar] has at least one matching Helm target in [module]. */
+    fun isSpringMatched(envVar: String, module: Module?): Boolean =
+        (moduleEntries(module, envVar)?.helmCount ?: 0) > 0
 
-    // ─── Internal cached index ───────────────────────────────────────────────
+    // ─── Internal cached index ────────────────────────────────────────────────
 
-    private fun index(): Map<String, EnvVarEntry> =
+    private fun moduleEntries(module: Module?, envVar: String): EnvVarEntry? =
+        module?.let { index()[it]?.get(envVar) }
+
+    private fun index(): Map<Module, Map<String, EnvVarEntry>> =
         CachedValuesManager.getManager(project).getCachedValue(project) {
-            CachedValueProvider.Result.create(
-                buildIndex(),
-                PsiModificationTracker.MODIFICATION_COUNT,
-            )
+            CachedValueProvider.Result.create(buildIndex(), PsiModificationTracker.MODIFICATION_COUNT)
         }
 
     /**
-     * Scans all YAML files and builds the comprehensive env var index.
-     * Deduplicates elements and organizes them by env var name.
+     * Builds one [EnvVarEntry] map per module, scanning each module's own content roots only.
      */
-    private fun buildIndex(): Map<String, EnvVarEntry> {
+    private fun buildIndex(): Map<Module, Map<String, EnvVarEntry>> {
         val psiManager = PsiManager.getInstance(project)
+        return yamlFilesByModule().mapValues { (_, files) ->
+            val helmValues = mutableMapOf<String, MutableList<PsiElement>>()
+            val springKeys = mutableMapOf<String, MutableList<PsiElement>>()
+            val springValueRefs = mutableMapOf<String, MutableList<PsiElement>>()
 
-        val helmValues = mutableMapOf<String, MutableList<PsiElement>>()
-        val springKeys = mutableMapOf<String, MutableList<PsiElement>>()
-        val springValueRefs = mutableMapOf<String, MutableList<PsiElement>>()
+            for (vFile in files) {
+                val yamlFile = psiManager.findFile(vFile) as? YAMLFile ?: continue
+                when {
+                    EnvVarMappingCore.isHelmTemplateFile(vFile) ->
+                        collectHelmMappings(yamlFile, helmValues)
+                    EnvVarMappingCore.isSpringApplicationFile(vFile) ->
+                        collectSpringMappings(yamlFile, springKeys, springValueRefs)
+                }
+            }
 
-        for (vFile in yamlFiles()) {
-            when {
-                EnvVarMappingCore.isHelmTemplateFile(vFile) ->
-                    collectHelmMappings(psiManager.findFile(vFile) as? YAMLFile, helmValues)
-
-                EnvVarMappingCore.isSpringApplicationFile(vFile) ->
-                    collectSpringMappings(psiManager.findFile(vFile), springKeys, springValueRefs)
+            val allNames = (helmValues.keys + springKeys.keys + springValueRefs.keys).toSet()
+            allNames.associateWith { name ->
+                EnvVarEntry(
+                    name = name,
+                    helmValues = helmValues[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
+                    springKeys = springKeys[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
+                    springValueRefs = springValueRefs[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
+                )
             }
         }
-
-        val allNames = (helmValues.keys + springKeys.keys + springValueRefs.keys).toSet()
-        return allNames.associateWith { name ->
-            EnvVarEntry(
-                name = name,
-                helmValues = helmValues[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
-                springKeys = springKeys[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
-                springValueRefs = springValueRefs[name]?.let(EnvVarMappingPsiUtils::distinctTargets).orEmpty(),
-            )
-        }
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
+    // ─── Collection helpers ───────────────────────────────────────────────────
 
     private fun MutableMap<String, MutableList<PsiElement>>.add(key: String, element: PsiElement) {
         getOrPut(key) { mutableListOf() }.add(element)
     }
 
     private fun collectHelmMappings(
-        yamlFile: YAMLFile?,
+        yamlFile: YAMLFile,
         helmValues: MutableMap<String, MutableList<PsiElement>>,
     ) {
-        val psiFile = yamlFile ?: return
-        collectHelmEnvNameEntries(psiFile).forEach { nameKey ->
-            val envVar = EnvVarMappingCore.extractHelmEnvVarValue(nameKey) ?: return@forEach
-            nameKey.value?.let { helmValues.add(envVar, it) }
+        fun walk(node: PsiElement) {
+            if (node is YAMLKeyValue && node.keyText == "name" && EnvVarMappingCore.isUnderEnvPath(node)) {
+                val envVar = EnvVarMappingCore.extractHelmEnvVarValue(node) ?: return
+                node.value?.let { helmValues.add(envVar, it) }
+            }
+            node.children.forEach(::walk)
         }
+        walk(yamlFile)
     }
 
     private fun collectSpringMappings(
-        psiFile: com.intellij.psi.PsiFile?,
+        yamlFile: YAMLFile,
         springKeys: MutableMap<String, MutableList<PsiElement>>,
         springValueRefs: MutableMap<String, MutableList<PsiElement>>,
     ) {
-        val file = psiFile ?: return
-        val text = file.text
-
-        EnvVarMappingCore.springKeyOccurrences(text).forEach { occurrence ->
-            val normalized = EnvVarMappingCore.springKeyToEnvVarName(occurrence.fullKey)
-            file.findElementAt(occurrence.keyOffset)?.let { springKeys.add(normalized, it) }
+        EnvVarMappingCore.springKeyOccurrences(yamlFile).forEach { (fullKey, keyElement) ->
+            springKeys.add(EnvVarMappingCore.springKeyToEnvVarName(fullKey), keyElement)
         }
-
-        EnvVarMappingCore.envVarRefRegex.findAll(text).forEach { match ->
-            val envVar = match.groups[1]?.value ?: return@forEach
-            val offset = match.groups[1]?.range?.first ?: return@forEach
-            file.findElementAt(offset)?.let { springValueRefs.add(envVar, it) }
+        EnvVarMappingCore.envVarRefRegex.findAll(yamlFile.text).forEach { match ->
+            val group = match.groups[1] ?: return@forEach
+            yamlFile.findElementAt(group.range.first)?.let { springValueRefs.add(group.value, it) }
         }
     }
 
-    /** Collects all YAML files in the project's content roots. */
-    private fun yamlFiles(): List<VirtualFile> {
-        val files = mutableListOf<VirtualFile>()
-        ProjectRootManager.getInstance(project).contentRootsFromAllModules.forEach { root ->
-            VfsUtilCore.iterateChildrenRecursively(root, null) { file ->
-                if (!file.isDirectory && EnvVarMappingCore.isYamlFile(file)) files += file
-                true
+    /** Collects all YAML files per module using each module's own content roots. */
+    private fun yamlFilesByModule(): Map<Module, List<VirtualFile>> =
+        ModuleManager.getInstance(project).modules.associate { module ->
+            val files = mutableListOf<VirtualFile>()
+            ModuleRootManager.getInstance(module).contentRoots.forEach { root ->
+                VfsUtilCore.iterateChildrenRecursively(root, null) { file ->
+                    if (!file.isDirectory && EnvVarMappingCore.isYamlFile(file)) files += file
+                    true
+                }
             }
+            module to files
         }
-        return files
-    }
-
-    /** Recursively walks an element tree collecting all Helm env name entries. */
-    private fun collectHelmEnvNameEntries(element: PsiElement): List<YAMLKeyValue> {
-        val results = mutableListOf<YAMLKeyValue>()
-        fun walk(node: PsiElement) {
-            if (node is YAMLKeyValue && node.keyText == "name" &&
-                EnvVarMappingCore.isUnderEnvPath(node)
-            ) results += node
-            node.children.forEach(::walk)
-        }
-        walk(element)
-        return results
-    }
 }

@@ -56,6 +56,5 @@ internal data class IndentKey(val indent: Int, val key: String)
 
 internal data class SpringKeyOccurrence(
     val fullKey: String,
-    val keyOffset: Int,
+    val keyElement: PsiElement,
 )
-

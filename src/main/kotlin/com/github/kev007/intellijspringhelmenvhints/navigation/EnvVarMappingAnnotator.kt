@@ -6,6 +6,7 @@ import com.intellij.lang.annotation.Annotator
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.editor.markup.TextAttributes
+import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
@@ -14,22 +15,10 @@ import org.jetbrains.yaml.psi.YAMLKeyValue
 import java.awt.Font
 
 /** Color for env vars that have corresponding definitions in both Spring and Helm. */
-private val MATCHED_REFERENCE_COLOR = TextAttributes(
-    JBColor(0x0B57D0, 0x7FB2FF),
-    null,
-    null,
-    null,
-    Font.PLAIN,
-)
+private val MATCHED_REFERENCE_COLOR = TextAttributes(JBColor(0x0B57D0, 0x7FB2FF), null, null, null, Font.PLAIN)
 
 /** Color for env vars that exist in only one file system. */
-private val UNMATCHED_REFERENCE_COLOR = TextAttributes(
-    JBColor(0xD93025, 0xFF8A80),
-    null,
-    null,
-    null,
-    Font.PLAIN,
-)
+private val UNMATCHED_REFERENCE_COLOR = TextAttributes(JBColor(0xD93025, 0xFF8A80), null, null, null, Font.PLAIN)
 
 class EnvVarMappingAnnotator : Annotator {
 
@@ -48,6 +37,7 @@ class EnvVarMappingAnnotator : Annotator {
 
     private fun annotateSpringValue(element: PsiElement, holder: AnnotationHolder) {
         val valueRange = element.textRange ?: return
+        val module = ModuleUtil.findModuleForPsiElement(element)
         EnvVarMappingCore.envVarReferenceSpansInRange(
             text = element.containingFile.text,
             startOffset = valueRange.startOffset,
@@ -56,32 +46,25 @@ class EnvVarMappingAnnotator : Annotator {
             annotateRange(
                 holder = holder,
                 range = TextRange(span.startOffset, span.endOffset),
-                status = EnvVarMappingSupport.mappingStatusForSpringVar(element.project, span.envVar),
+                status = EnvVarMappingSupport.mappingStatusForSpringVar(element.project, module, span.envVar),
             )
         }
     }
 
     private fun annotateHelmValue(element: PsiElement, holder: AnnotationHolder) {
         val span = EnvVarMappingCore.helmEnvNameSpan(element) ?: return
+        val module = ModuleUtil.findModuleForPsiElement(element)
         annotateRange(
             holder = holder,
             range = TextRange(span.startOffset, span.endOffset),
-            status = EnvVarMappingSupport.mappingStatusForHelmVar(element.project, span.envVar),
+            status = EnvVarMappingSupport.mappingStatusForHelmVar(element.project, module, span.envVar),
         )
     }
 
     private fun annotateRange(holder: AnnotationHolder, range: TextRange, status: MappingStatus) {
-        val attributes = when (status) {
-            MappingStatus.MATCHED -> MATCHED_REFERENCE_COLOR
-            MappingStatus.UNMATCHED -> UNMATCHED_REFERENCE_COLOR
-        }
-
         holder.newSilentAnnotation(HighlightSeverity.INFORMATION)
             .range(range)
-            .enforcedTextAttributes(attributes)
+            .enforcedTextAttributes(if (status == MappingStatus.MATCHED) MATCHED_REFERENCE_COLOR else UNMATCHED_REFERENCE_COLOR)
             .create()
     }
 }
-
-
-
