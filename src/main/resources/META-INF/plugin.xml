@@ -4,8 +4,8 @@
     <name>Spring Helm Env Hints</name>
     <vendor>kev007</vendor>
     <description><![CDATA[
-        <p><b>intellij-spring-helm-env-hints</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
-        <p>The main goal of this template is to speed up the setup phase of plugin development for both new and experienced developers by preconfiguring the project scaffold and CI, linking to the proper documentation pages, and keeping everything organized.</p>
+        <p><b>intellij-spring-helm-env-hints</b> is a plugin for navigating between Spring `application*.yml|yaml` configuration
+        and Helm template env vars under `templates/`</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
@@ -14,10 +14,8 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <projectService serviceImplementation="com.github.kev007.intellijspringhelmenvhints.services.EnvVarRegistryService"/>
-        <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingGotoDeclarationHandler"/>
-        <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingReferenceContributor"/>
-        <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarMappingAnnotator"/>
-
+        <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarGotoHandler"/>
+        <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarReferenceContributor"/>
+        <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarAnnotator"/>
     </extensions>
 </idea-plugin>
