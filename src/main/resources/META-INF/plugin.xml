@@ -17,5 +17,16 @@
         <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarGotoHandler"/>
         <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarReferenceContributor"/>
         <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarAnnotator"/>
+
+        <!-- Persistent colour settings (application-level, shared across all projects) -->
+        <applicationService
+            serviceImplementation="com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsSettings"/>
+
+        <!-- Settings → Other Settings → Spring Helm Env Hints -->
+        <projectConfigurable
+            parentId="other"
+            id="com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsConfigurable"
+            displayName="Spring Helm Env Hints"
+            instance="com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsConfigurable"/>
     </extensions>
 </idea-plugin>

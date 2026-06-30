@@ -14,7 +14,7 @@
           </set>
         </option>
         <option name="resolveExternalAnnotations" value="true" />
-        <option name="myGradleHome" value="C:\ProgramData\chocolatey\lib\gradle\tools\gradle-9.5.1" />
+        <option name="myGradleHome" value="C:\ProgramData\chocolatey\lib\gradle\tools\gradle-9.6.0" />
       </GradleProjectSettings>
     </option>
     <option name="parallelModelFetch" value="true" />

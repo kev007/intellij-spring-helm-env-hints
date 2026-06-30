@@ -1,5 +1,6 @@
 package com.github.kev007.intellijspringhelmenvhints.navigation
 
+import com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsSettings
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
@@ -209,8 +210,10 @@ private fun collectHelm(yaml: YAMLFile, map: MutableMap<String, MutableList<PsiE
 }
 
 private fun collectSpring(yaml: YAMLFile, map: MutableMap<String, MutableList<PsiElement>>) {
-    springKeyOccurrences(yaml).forEach { (key, el) ->
-        map.getOrPut(springKeyToEnvVar(key)) { mutableListOf() } += el
+    if (HelmEnvHintsSettings.instance.state.springKeyMatchingEnabled) {
+        springKeyOccurrences(yaml).forEach { (key, el) ->
+            map.getOrPut(springKeyToEnvVar(key)) { mutableListOf() } += el
+        }
     }
     ENV_REF_REGEX.findAll(yaml.text).forEach { m ->
         val g = m.groups[1] ?: return@forEach
@@ -218,17 +221,25 @@ private fun collectSpring(yaml: YAMLFile, map: MutableMap<String, MutableList<Ps
     }
 }
 
-/** Returns the project-wide env index, rebuilt only when PSI changes. */
+/** Returns the project-wide env index, rebuilt only when PSI changes or index-relevant settings change. */
 private fun projectEnvIndex(project: Project): EnvIndex =
     CachedValuesManager.getManager(project).getCachedValue(project) {
-        CachedValueProvider.Result.create(buildIndex(project), PsiModificationTracker.MODIFICATION_COUNT)
+        CachedValueProvider.Result.create(
+            buildIndex(project),
+            PsiModificationTracker.MODIFICATION_COUNT,
+            HelmEnvHintsSettings.instance.indexTracker
+        )
     }
 
 // ─── Public lookup API ────────────────────────────────────────────────────────
 
 internal fun findHelmTargets(envVar: String, project: Project, module: Module): List<PsiElement> =
     projectEnvIndex(project).helm[module]?.get(envVar).orEmpty().also {
-        if (it.isNotEmpty()) LOG.info("[$envVar] Spring → Helm: ${it.size} target(s) in '${module.name}'")
+        if (it.isNotEmpty()) {
+            LOG.info("[$envVar] Spring → Helm: ${it.size} target(s) in '${module.name}'")
+        } else {
+            LOG.info("what")
+        }
     }
 
 internal fun findSpringTargets(envVar: String, project: Project, module: Module): List<PsiElement> =
@@ -245,6 +256,38 @@ internal fun isHelmMatched(envVar: String, project: Project, module: Module): Bo
 /** Deduplicates PSI elements by (virtual file path, text offset). */
 internal fun deduplicated(elements: List<PsiElement>): List<PsiElement> =
     elements.distinctBy { "${it.containingFile?.virtualFile?.path}:${it.textRange?.startOffset}" }
+
+// ─── Debug / settings panel API ───────────────────────────────────────────────
+
+/** Per-module summary of env var matching state, shown in the plugin settings debug accordion. */
+data class ModuleDebugInfo(
+    val moduleName: String,
+    /** Vars present in BOTH Helm templates and Spring application files. */
+    val matchedVars: List<String>,
+    /** Vars found only in Helm templates (no Spring counterpart). */
+    val helmOnlyVars: List<String>,
+    /** Vars found only in Spring application files (no Helm counterpart). */
+    val springOnlyVars: List<String>,
+)
+
+/**
+ * Returns a [ModuleDebugInfo] list for [project], one entry per module that has any env var data.
+ * Re-uses the same cached index used by the annotator and goto handler.
+ */
+fun getDebugInfo(project: Project): List<ModuleDebugInfo> {
+    val index = projectEnvIndex(project)
+    val allModules = (index.helm.keys + index.spring.keys).toSet()
+    return allModules.map { module ->
+        val helmKeys   = index.helm[module]?.keys?.toSet()   ?: emptySet()
+        val springKeys = index.spring[module]?.keys?.toSet() ?: emptySet()
+        ModuleDebugInfo(
+            moduleName    = module.name,
+            matchedVars   = (helmKeys intersect springKeys).sorted(),
+            helmOnlyVars  = (helmKeys - springKeys).sorted(),
+            springOnlyVars = (springKeys - helmKeys).sorted(),
+        )
+    }.sortedBy { it.moduleName }
+}
 
 
 
