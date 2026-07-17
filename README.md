@@ -1,6 +1,6 @@
 # intellij-spring-helm-env-hints
 
-IntelliJ plugin for navigating between Spring `application*.yml|yaml` configuration and Helm template env vars under `templates/`.
+IntelliJ plugin for navigating between Spring `application*.yml|yaml` configuration and Helm template environment variables under `templates/`.
 
 ## Current implementation (as of 2026-06-03)
 

@@ -27,7 +27,10 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
         @JvmField var useTextColor: Boolean = false
         // Whether Spring property key paths (e.g. server.port → SERVER_PORT) are
         // converted to env var names and matched against Helm templates
-        @JvmField var springKeyMatchingEnabled: Boolean = true
+        @JvmField var springKeyMatchingEnabled: Boolean = false
+        // Whether env vars are matched across ALL project modules. When false,
+        // matching is confined to the module that owns each file (the default).
+        @JvmField var matchAcrossModules: Boolean = false
         // Background colours for "matched" highlight (transparent blue)
         @JvmField var matchedBgLightArgb: Int  = Color(11, 87, 208, 50).rgb
         @JvmField var matchedBgDarkArgb: Int   = Color(127, 178, 255, 60).rgb

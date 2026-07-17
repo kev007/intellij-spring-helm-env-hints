@@ -32,6 +32,9 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     private val springKeyMatchingCheckBox = JBCheckBox(
         "Match Spring property keys to Helm env vars (e.g. server.port → SERVER_PORT)"
     )
+    private val matchAcrossModulesCheckBox = JBCheckBox(
+        "Match env vars across all project modules"
+    )
 
     // ─── Mode radio buttons ──────────────────────────────────────────────────
     private val useHighlightRadio = JBRadioButton("Background highlight")
@@ -129,6 +132,13 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
                         "Disable to match only explicit \${ENV_VAR} references."
                     )
                 }
+                row { cell(matchAcrossModulesCheckBox) }
+                row {
+                    comment(
+                        "When enabled, env vars are matched across every module in the project. " +
+                        "Disable to confine matching to the module that owns each file."
+                    )
+                }
             }
             group("Color Mode") {
                 buttonsGroup {
@@ -160,6 +170,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     fun reset() {
         val s = HelmEnvHintsSettings.instance.state
         springKeyMatchingCheckBox.isSelected = s.springKeyMatchingEnabled
+        matchAcrossModulesCheckBox.isSelected = s.matchAcrossModules
         if (s.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
         loadColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha,   s.matchedBgLightArgb)
         loadColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha,    s.matchedBgDarkArgb)
@@ -179,6 +190,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     fun apply() {
         val s = HelmEnvHintsSettings.instance.state
         s.springKeyMatchingEnabled  = springKeyMatchingCheckBox.isSelected
+        s.matchAcrossModules        = matchAcrossModulesCheckBox.isSelected
         s.useTextColor              = useFontColorRadio.isSelected
         s.matchedBgLightArgb        = readColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha)
         s.matchedBgDarkArgb         = readColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha)
@@ -196,6 +208,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     fun isModified(): Boolean {
         val s = HelmEnvHintsSettings.instance.state
         return springKeyMatchingCheckBox.isSelected != s.springKeyMatchingEnabled ||
+               matchAcrossModulesCheckBox.isSelected != s.matchAcrossModules ||
                useFontColorRadio.isSelected != s.useTextColor ||
                readColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha)   != s.matchedBgLightArgb  ||
                readColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha)    != s.matchedBgDarkArgb   ||
@@ -225,6 +238,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     /** Resets all controls to the built-in defaults. */
     private fun resetToDefaults() {
         springKeyMatchingCheckBox.isSelected = true
+        matchAcrossModulesCheckBox.isSelected = false
         useHighlightRadio.isSelected = true
         loadColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha,   HelmEnvHintsSettings.DEF_MATCHED_BG_LIGHT.rgb)
         loadColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha,    HelmEnvHintsSettings.DEF_MATCHED_BG_DARK.rgb)

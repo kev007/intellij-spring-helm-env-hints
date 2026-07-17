@@ -5,7 +5,7 @@
     <vendor>kev007</vendor>
     <description><![CDATA[
         <p><b>intellij-spring-helm-env-hints</b> is a plugin for navigating between Spring `application*.yml|yaml` configuration
-        and Helm template env vars under `templates/`</p>
+        and Helm template environment variables under `templates/`</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

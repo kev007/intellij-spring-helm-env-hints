@@ -41,7 +41,8 @@ class EnvVarGotoHandler : GotoDeclarationHandler {
             else -> emptyList()
         }
 
-        return deduplicated(fromRefs + fromMapping).toTypedArray().takeIf { it.isNotEmpty() }
+        return excludingSelf(deduplicated(fromRefs + fromMapping), vf)
+            .toTypedArray().takeIf { it.isNotEmpty() }
     }
 }
 
