@@ -19,10 +19,12 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.yaml.YAMLLanguage
 import org.jetbrains.yaml.psi.YAMLFile
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
+import org.jetbrains.yaml.psi.YAMLScalar
 import org.jetbrains.yaml.psi.YAMLSequence
 
 private val LOG = Logger.getInstance("com.github.kev007.intellijspringhelmenvhints.EnvVarIndex")
@@ -50,6 +52,16 @@ internal fun VirtualFile.isHelmTemplate() =
  */
 internal fun VirtualFile.yamlPsi(psiManager: PsiManager): YAMLFile? =
     psiManager.findViewProvider(this)?.getPsi(YAMLLanguage.INSTANCE) as? YAMLFile
+
+/**
+ * The YAML PSI root of the view provider this [PsiFile] belongs to.
+ *
+ * Same idea as [yamlPsi], but starting from a PSI file that has already been resolved (the
+ * one an inspection / inlay pass was handed), so a Helm template owned by `HelmYAML` or
+ * `GoTemplate` resolves to its template-data YAML root instead of returning null.
+ */
+internal fun PsiFile.yamlRoot(): YAMLFile? =
+    this as? YAMLFile ?: viewProvider.getPsi(YAMLLanguage.INSTANCE) as? YAMLFile
 
 
 // ─── Spring YAML utilities ────────────────────────────────────────────────────
@@ -92,8 +104,20 @@ private fun yamlKeyPath(kv: YAMLKeyValue): String {
     return parts.joinToString(".")
 }
 
-/** An env var name occurrence, with absolute (file-level) offsets. */
-internal data class EnvSpan(val envVar: String, val startOffset: Int, val endOffset: Int) {
+/**
+ * An env var name occurrence, with absolute (file-level) offsets.
+ *
+ * [startOffset]/[endOffset] delimit the NAME itself (that is what gets highlighted and what
+ * a PSI reference covers), while [tagOffset] is the offset the "N refs" tag is anchored to:
+ * the end of the whole occurrence (`${NAME:default}` including the closing brace, or the end
+ * of the — possibly quoted — Helm `name:` value), so the tag never lands inside the text.
+ */
+internal data class EnvSpan(
+    val envVar: String,
+    val startOffset: Int,
+    val endOffset: Int,
+    val tagOffset: Int = endOffset,
+) {
     operator fun contains(offset: Int) = offset in startOffset until endOffset
 
     /** This span expressed relative to [element]'s own text range. */
@@ -114,7 +138,15 @@ internal data class EnvSpan(val envVar: String, val startOffset: Int, val endOff
 internal fun springRefSpans(element: PsiElement): List<EnvSpan> {
     val base = element.textRange?.startOffset ?: return emptyList()
     return ENV_REF_REGEX.findAll(element.text).mapNotNull { m ->
-        m.groups[1]?.let { g -> EnvSpan(g.value, base + g.range.first, base + g.range.last + 1) }
+        m.groups[1]?.let { g ->
+            EnvSpan(
+                envVar      = g.value,
+                startOffset = base + g.range.first,
+                endOffset   = base + g.range.last + 1,
+                // Anchor the tag after the closing '}' of the whole ${...} expression.
+                tagOffset   = base + m.range.last + 1,
+            )
+        }
     }.toList()
 }
 
@@ -148,7 +180,8 @@ internal fun helmEnvNameSpan(valueElement: PsiElement): EnvSpan? {
     if (kv.value != valueElement || !isHelmEnvNameKv(kv)) return null
     val name = valueElement.helmEnvName() ?: return null
     val start = valueElement.textRange.startOffset + valueElement.text.indexOf(name)
-    return EnvSpan(name, start, start + name.length)
+    // Anchor the tag after the value (past any surrounding quotes).
+    return EnvSpan(name, start, start + name.length, valueElement.textRange.endOffset)
 }
 
 /** Returns the Helm env var name at [offset] from a `name:` key under containers/env. */
@@ -178,6 +211,27 @@ internal fun isUnderEnvPath(element: PsiElement): Boolean {
     }
     return foundEnv && foundContainers
 }
+
+// ─── File-wide occurrence walk ────────────────────────────────────────────────
+
+/**
+ * Every env var occurrence in [yamlFile], from the Spring side (`${ENV_VAR}` inside scalar
+ * values) or from the Helm side (`containers > env > name:` values).
+ *
+ * Each occurrence is reported EXACTLY ONCE. Walking scalars — rather than "the value of a
+ * key/value pair" — is what guarantees that: scalars never nest, whereas a `YAMLMapping` is
+ * both a value itself and the owner of every `${ENV_VAR}` in its subtree, so a value-based
+ * walk reports a deeply nested reference once per enclosing mapping level. As a bonus,
+ * scalars inside sequences (`args: [ ${FOO} ]`) are covered too, matching what the index
+ * (which scans the raw file text) already records.
+ */
+internal fun envSpansInFile(yamlFile: YAMLFile, fromSpring: Boolean): List<EnvSpan> =
+    if (fromSpring) {
+        PsiTreeUtil.findChildrenOfType(yamlFile, YAMLScalar::class.java).flatMap(::springRefSpans)
+    } else {
+        PsiTreeUtil.findChildrenOfType(yamlFile, YAMLKeyValue::class.java)
+            .mapNotNull { kv -> kv.value?.let(::helmEnvNameSpan) }
+    }
 
 // ─── Scope-based match index ──────────────────────────────────────────────────
 
@@ -448,6 +502,27 @@ internal fun deduplicated(elements: List<PsiElement>): List<PsiElement> =
 internal fun excludingSelf(targets: List<PsiElement>, sourceFile: VirtualFile?): List<PsiElement> {
     val self = sourceFile?.path ?: return targets
     return targets.filter { it.containingFile?.virtualFile?.path != self }
+}
+
+/**
+ * The counterpart occurrences of [envVar] as seen from one side of the match: the Helm
+ * `env[*].name` entries when [fromSpring] is true, the Spring `${ENV_VAR}` / property-key
+ * occurrences otherwise.
+ *
+ * The result is deduplicated and never contains an element from [sourceFile] itself, so its
+ * size is exactly the number of places the user can navigate to — which is what the
+ * reference-count tag shows.
+ */
+internal fun counterpartRefs(
+    envVar: String,
+    project: Project,
+    module: Module,
+    sourceFile: VirtualFile?,
+    fromSpring: Boolean,
+): List<PsiElement> {
+    val match = resolveEnvMatch(envVar, project, module) ?: return emptyList()
+    val raw = if (fromSpring) match.helmElements else match.springElements
+    return excludingSelf(deduplicated(raw), sourceFile)
 }
 
 // ─── Debug / settings panel API ───────────────────────────────────────────────

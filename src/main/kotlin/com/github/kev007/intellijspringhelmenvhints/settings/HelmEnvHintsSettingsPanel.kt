@@ -79,6 +79,9 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     private val includeExcludedFoldersCheckBox = JBCheckBox(
         "Scan folders excluded in the project structure (build, target, out, …)"
     )
+    private val showReferenceCountTagCheckBox = JBCheckBox(
+        "Show \"N refs\" tag next to matched env vars"
+    )
 
     // ─── Mode radio buttons ──────────────────────────────────────────────────
     private val useHighlightRadio = JBRadioButton("Background highlight")
@@ -183,7 +186,20 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
                     )
                 }
             }
+            group("Reference Count Tag") {
+                row { cell(showReferenceCountTagCheckBox) }
+                row {
+                    comment(
+                        "When enabled, an inline tag with the number of references is rendered " +
+                        "next to every env var that has a counterpart on the opposite side " +
+                        "(Helm entries for a Spring \${ENV_VAR}, Spring occurrences for a Helm " +
+                        "env[].name); click it to jump to the target or to list them. " +
+                        "The tag can also be turned off under Settings → Editor → Inlay Hints."
+                    )
+                }
+            }
             group("Color Mode") {
+
                 buttonsGroup {
                     row {
                         cell(useHighlightRadio)
@@ -215,6 +231,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         springKeyMatchingCheckBox.isSelected = s.springKeyMatchingEnabled
         matchAcrossModulesCheckBox.isSelected = s.matchAcrossModules
         includeExcludedFoldersCheckBox.isSelected = s.includeExcludedFolders
+        showReferenceCountTagCheckBox.isSelected = s.showReferenceCountTag
         if (s.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
         bindings.forEach { it.reset(s) }
         // Sync section visibility in case createPanel() was already called
@@ -227,6 +244,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         s.springKeyMatchingEnabled = springKeyMatchingCheckBox.isSelected
         s.matchAcrossModules       = matchAcrossModulesCheckBox.isSelected
         s.includeExcludedFolders   = includeExcludedFoldersCheckBox.isSelected
+        s.showReferenceCountTag    = showReferenceCountTagCheckBox.isSelected
         s.useTextColor             = useFontColorRadio.isSelected
         bindings.forEach { it.apply(s) }
     }
@@ -237,6 +255,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         return springKeyMatchingCheckBox.isSelected != s.springKeyMatchingEnabled ||
                matchAcrossModulesCheckBox.isSelected != s.matchAcrossModules ||
                includeExcludedFoldersCheckBox.isSelected != s.includeExcludedFolders ||
+               showReferenceCountTagCheckBox.isSelected != s.showReferenceCountTag ||
                useFontColorRadio.isSelected != s.useTextColor ||
                bindings.any { it.isModified(s) }
     }
@@ -275,6 +294,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         springKeyMatchingCheckBox.isSelected = DEFAULTS.springKeyMatchingEnabled
         matchAcrossModulesCheckBox.isSelected = DEFAULTS.matchAcrossModules
         includeExcludedFoldersCheckBox.isSelected = DEFAULTS.includeExcludedFolders
+        showReferenceCountTagCheckBox.isSelected = DEFAULTS.showReferenceCountTag
         if (DEFAULTS.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
         bindings.forEach { it.loadDefault() }
     }

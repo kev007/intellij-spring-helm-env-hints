@@ -44,6 +44,10 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
         // index. Off by default: generated copies of resources would otherwise
         // duplicate (and can falsely create) matches.
         @JvmField var includeExcludedFolders: Boolean = false
+        // Whether an inline "N refs" tag is rendered next to a highlighted env var, stating
+        // how many occurrences it resolves to on the opposite side. Occurrences without a
+        // counterpart are never tagged, since there is nothing to navigate to.
+        @JvmField var showReferenceCountTag: Boolean = true
         // Background colours for "matched" highlight (translucent blue)
         @JvmField var matchedBgLightArgb: Int   = argb(11, 87, 208, a = 50)
         @JvmField var matchedBgDarkArgb: Int    = argb(127, 178, 255, a = 60)

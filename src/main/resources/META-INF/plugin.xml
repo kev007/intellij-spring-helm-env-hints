@@ -17,6 +17,25 @@
         <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarReferenceContributor"/>
         <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarAnnotator"/>
 
+        <!-- Matches plain YAML plus the template languages that own Helm charts
+             (HelmYAML / GoTemplate), whose base language is NOT a YAML dialect. -->
+        <metaLanguage implementation="com.github.kev007.intellijspringhelmenvhints.navigation.YamlLikeMetaLanguage"/>
+
+        <!-- Inline "N refs" tag next to env vars that resolve to occurrences on the opposite side -->
+        <codeInsight.declarativeInlayProvider
+            language="SpringHelmEnvHintsYamlLike"
+            providerId="spring.helm.env.reference.count"
+            implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvRefCountInlayProvider"
+            isEnabledByDefault="true"
+            group="OTHER_GROUP"
+            bundle="messages.HelmEnvHintsBundle"
+            nameKey="inlay.provider.envRefCount.name"
+            descriptionKey="inlay.provider.envRefCount.description"/>
+        <codeInsight.inlayActionHandler
+            handlerId="spring.helm.env.reference.count"
+            implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvRefCountActionHandler"/>
+
+
         <!-- Persistent colour settings (application-level, shared across all projects) -->
         <applicationService
             serviceImplementation="com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsSettings"/>

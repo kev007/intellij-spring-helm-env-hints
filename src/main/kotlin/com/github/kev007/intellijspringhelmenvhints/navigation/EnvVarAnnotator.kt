@@ -9,9 +9,8 @@ import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.ui.JBColor
-import org.jetbrains.yaml.psi.YAMLKeyValue
+import org.jetbrains.yaml.psi.YAMLScalar
 import java.awt.Color
 import java.awt.Font
 
@@ -50,9 +49,10 @@ class EnvVarAnnotator : Annotator {
 
     override fun annotate(element: PsiElement, holder: AnnotationHolder) {
         val vf = element.containingFile?.virtualFile ?: return
-        // Only annotate the VALUE side of a key/value pair.
-        val kv = PsiTreeUtil.getParentOfType(element, YAMLKeyValue::class.java, false) ?: return
-        if (kv.value != element) return
+        // Only scalars carry env var occurrences. Restricting to them (instead of "the value
+        // of a key/value pair") avoids annotating the same reference once per enclosing
+        // YAMLMapping — a mapping is a value too, and its text spans its whole subtree.
+        if (element !is YAMLScalar) return
 
         val module = ModuleUtil.findModuleForPsiElement(element) ?: return
 

@@ -8,6 +8,7 @@ variables declared in Helm chart templates, with highlighting and two-way naviga
 | Feature | Behaviour |
 | --- | --- |
 | Highlighting | Env var occurrences are coloured differently depending on whether they exist on **both** sides (matched) or only one (unmatched). No tooltips are added. |
+| Reference count tag | An inline `N refs` tag is shown next to every env var that resolves to at least one occurrence on the opposite side. Hover for the target `file:line` list, click to navigate. |
 | Go to Declaration | <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd> jumps Spring → Helm and Helm → Spring. |
 | Ctrl+Click / Rename | Spring and Helm occurrences are real PSI references, so click-navigation and *Refactor → Rename* work across files. |
 
@@ -18,7 +19,7 @@ variables declared in Helm chart templates, with highlighting and two-way naviga
 - *Spring file* — name starts with `application` and ends in `.yaml`/`.yml`.
 - *Helm template* — any `.yaml`/`.yml` whose path contains `/templates/`.
 
-**Env var extraction:**
+**Environment variable extraction:**
 
 - Helm: the value of every `name:` key nested under both `containers` and `env`
   (i.e. `spec.containers[*].env[*].name`). Quotes are stripped.
@@ -50,6 +51,11 @@ qualifies as both a Spring file and a Helm template cannot self-resolve.
 - **Scan folders excluded in the project structure** — off by default. Excluded folders
   (`build`, `target`, `out`, …) usually only contain generated copies of resources, which would
   duplicate or falsely create matches; enable this if your YAML lives in such a folder.
+- **Show "N refs" tag** — inline reference-count tag, on by default. It is a declarative inlay
+  hint, so it can also be switched off under <kbd>Settings</kbd> → <kbd>Editor</kbd> →
+  <kbd>Inlay Hints</kbd> → <kbd>Other</kbd>. The count is the number of *deduplicated*
+  targets outside the current file — exactly what <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>
+  would offer — so an env var without a counterpart is never tagged.
 - **Color Mode** — background highlight (with per-theme alpha) or font colour; separate light
   and dark theme colours for matched/unmatched plus the Spring reference underline.
 - **Debug: Current Matches** — dumps the live index per scope as matched / Helm-only /
@@ -64,10 +70,13 @@ modification tracker that invalidates the cached index and restarts the code ana
 src/main/kotlin/.../navigation/
   EnvVarUtils.kt                file classification, YAML parsing, scope index, resolveEnvMatch()
   EnvVarAnnotator.kt            highlighting (settings-driven enforced text attributes)
+  EnvRefCountInlayProvider.kt   inline "N refs" tag (declarative inlay hint) + its click handler
+  YamlLikeMetaLanguage.kt       meta language the inlay provider is registered for
   EnvVarGotoHandler.kt          Ctrl+B, merging PSI references with index lookups
   EnvVarReferenceContributor.kt PSI references for Ctrl+Click and rename
 src/main/kotlin/.../settings/   persistent state, Configurable, settings panel
 src/main/resources/META-INF/plugin.xml
+src/main/resources/messages/HelmEnvHintsBundle.properties   inlay provider name/description
 ```
 
 - `resolveEnvMatch()` in `EnvVarUtils.kt` is the single matching routine; everything else is a
@@ -76,17 +85,30 @@ src/main/resources/META-INF/plugin.xml
   `PsiModificationTracker.MODIFICATION_COUNT` and the settings tracker. It is therefore
   rebuilt after any PSI edit — fine for typical repos, but it is the first thing to look at
   if highlighting feels slow in a very large project.
-- Helm templates owned by a template-language plugin (e.g. *Go Template*) are read via
-  `viewProvider.getPsi(YAMLLanguage)` rather than `PsiManager.findFile`, whose base language
-  would not be YAML.
+- Helm templates owned by a template-language plugin (e.g. *Go Template*, or the Kubernetes
+  plugin's `HelmYAML`) are read via `viewProvider.getPsi(YAMLLanguage)` rather than
+  `PsiManager.findFile`, whose base language would not be YAML.
+- For the same reason the inlay provider is registered against a `MetaLanguage`
+  (`YamlLikeMetaLanguage`, id `SpringHelmEnvHintsYamlLike`) that matches YAML dialects **and**
+  template languages: declarative inlay providers are selected by the file's *base* language
+  only, so a `yaml`-registered provider is never instantiated for a `HelmYAML` file. It is
+  also an `OwnBypassCollector`, walking the YAML root itself, because the platform only walks
+  the base-language PSI root — and because a value-driven walk emits one duplicate tag per
+  enclosing `YAMLMapping` level.
 - Each YAML file is indexed once under its deepest owning module, which is what stops an
   aggregate module from indexing the whole repository.
 - Content roots are walked with `VfsUtilCore.iterateChildrenRecursively`; unless *Scan folders
   excluded in the project structure* is on, a `VirtualFileFilter` backed by
   `ProjectFileIndex.isExcluded` rejects excluded files, which also prunes the whole sub-tree.
 - Registered extensions: `annotator` (yaml), `psi.referenceContributor` (yaml),
-  `gotoDeclarationHandler`, `applicationService`, `projectConfigurable`.
+  `gotoDeclarationHandler`, `metaLanguage`, `codeInsight.declarativeInlayProvider`
+  (`SpringHelmEnvHintsYamlLike`) plus its `codeInsight.inlayActionHandler`,
+  `applicationService`, `projectConfigurable`.
   *Find Usages* is **not** implemented.
+- The reference-count tag reuses `resolveEnvMatch()` through `counterpartRefs()`, so it can
+  never disagree with the highlight or with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>. It is
+  anchored at `EnvSpan.tagOffset` (after the closing `}` of `${…}`, or after the Helm value's
+  closing quote) so it never splits the highlighted text.
 
 ## Build and run
 

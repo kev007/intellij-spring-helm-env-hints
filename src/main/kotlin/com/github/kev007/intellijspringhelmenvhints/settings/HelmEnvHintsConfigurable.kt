@@ -1,6 +1,7 @@
 package com.github.kev007.intellijspringhelmenvhints.settings
 
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.codeInsight.hints.declarative.impl.DeclarativeInlayHintsPassFactory
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
 import javax.swing.JComponent
@@ -29,6 +30,8 @@ class HelmEnvHintsConfigurable(private val project: Project) : Configurable {
         settingsPanel?.apply()
         // Invalidate the cached env-var index so index-affecting settings take effect
         HelmEnvHintsSettings.instance.indexTracker.incModificationCount()
+        // Drop the cached inlay stamp so the "N refs" tags are recomputed, not reused
+        DeclarativeInlayHintsPassFactory.resetModificationStamp()
         // Force immediate re-highlighting of all open editors in this project
         DaemonCodeAnalyzer.getInstance(project).restart()
     }
