@@ -48,6 +48,10 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
         // how many occurrences it resolves to on the opposite side. Occurrences without a
         // counterpart are never tagged, since there is nothing to navigate to.
         @JvmField var showReferenceCountTag: Boolean = true
+        // Whether the tag is suppressed when there is exactly one counterpart ("1 ref").
+        // On by default: a single reference is already reachable via ctrl/cmd-click, so the
+        // tag adds clutter without adding information.
+        @JvmField var hideSingleReferenceTag: Boolean = true
         // Background colours for "matched" highlight (translucent blue)
         @JvmField var matchedBgLightArgb: Int   = argb(11, 87, 208, a = 50)
         @JvmField var matchedBgDarkArgb: Int    = argb(127, 178, 255, a = 60)

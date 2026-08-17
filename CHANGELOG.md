@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 ### Added
+- Settings toggle "Hide the tag when there is only one reference (\"1 ref\")", on by default and nested under the "N refs" tag toggle. Single-reference occurrences were previously always skipped; the behaviour is now configurable, so the `1 ref` tag can be rendered as well.
 - Inline "N refs" tag rendered next to a highlighted env var, stating how many occurrences it resolves to on the opposite side (Helm entries for a Spring `${ENV_VAR}`, Spring occurrences for a Helm `env[].name`). The tag's tooltip lists the target `file:line`s, and clicking it navigates to the target or opens the chooser popup. It can be switched off in the plugin settings or under Settings → Editor → Inlay Hints → Other.
 - Settings toggle "Scan folders excluded in the project structure (build, target, out, …)", off by default. When disabled, YAML files under excluded roots are no longer indexed, so generated copies of Spring/Helm resources cannot duplicate or falsely create matches.
 - Settings toggle "Match env vars across all project modules" to control whether Spring/Helm env vars are matched project-wide or only within each module.

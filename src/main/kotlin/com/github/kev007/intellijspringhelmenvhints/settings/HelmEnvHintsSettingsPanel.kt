@@ -82,6 +82,9 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     private val showReferenceCountTagCheckBox = JBCheckBox(
         "Show \"N refs\" tag next to matched env vars"
     )
+    private val hideSingleReferenceTagCheckBox = JBCheckBox(
+        "Hide the tag when there is only one reference (\"1 ref\")"
+    )
 
     // ─── Mode radio buttons ──────────────────────────────────────────────────
     private val useHighlightRadio = JBRadioButton("Background highlight")
@@ -160,6 +163,10 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         useHighlightRadio.addItemListener { updateColorSectionVisibility() }
         useFontColorRadio.addItemListener { updateColorSectionVisibility() }
 
+        // The "1 ref" sub-option only makes sense while the tag itself is shown
+        showReferenceCountTagCheckBox.addItemListener { updateReferenceCountTagEnablement() }
+        updateReferenceCountTagEnablement()
+
         return panel {
             group("Matching") {
                 row { cell(springKeyMatchingCheckBox) }
@@ -197,6 +204,16 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
                         "The tag can also be turned off under Settings → Editor → Inlay Hints."
                     )
                 }
+                indent {
+                    row { cell(hideSingleReferenceTagCheckBox) }
+                    row {
+                        comment(
+                            "When enabled, env vars that resolve to a single counterpart are left " +
+                            "untagged to reduce clutter — they can still be reached with " +
+                            "ctrl/cmd-click. Disable to show a \"1 ref\" tag for them too."
+                        )
+                    }
+                }
             }
             group("Color Mode") {
 
@@ -232,10 +249,12 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         matchAcrossModulesCheckBox.isSelected = s.matchAcrossModules
         includeExcludedFoldersCheckBox.isSelected = s.includeExcludedFolders
         showReferenceCountTagCheckBox.isSelected = s.showReferenceCountTag
+        hideSingleReferenceTagCheckBox.isSelected = s.hideSingleReferenceTag
         if (s.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
         bindings.forEach { it.reset(s) }
         // Sync section visibility in case createPanel() was already called
         updateColorSectionVisibility()
+        updateReferenceCountTagEnablement()
     }
 
     /** Persist UI control values into settings. */
@@ -245,6 +264,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         s.matchAcrossModules       = matchAcrossModulesCheckBox.isSelected
         s.includeExcludedFolders   = includeExcludedFoldersCheckBox.isSelected
         s.showReferenceCountTag    = showReferenceCountTagCheckBox.isSelected
+        s.hideSingleReferenceTag   = hideSingleReferenceTagCheckBox.isSelected
         s.useTextColor             = useFontColorRadio.isSelected
         bindings.forEach { it.apply(s) }
     }
@@ -256,6 +276,7 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
                matchAcrossModulesCheckBox.isSelected != s.matchAcrossModules ||
                includeExcludedFoldersCheckBox.isSelected != s.includeExcludedFolders ||
                showReferenceCountTagCheckBox.isSelected != s.showReferenceCountTag ||
+               hideSingleReferenceTagCheckBox.isSelected != s.hideSingleReferenceTag ||
                useFontColorRadio.isSelected != s.useTextColor ||
                bindings.any { it.isModified(s) }
     }
@@ -289,14 +310,21 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         }
     }
 
+    /** Greys out the "1 ref" sub-option while the reference count tag is disabled. */
+    private fun updateReferenceCountTagEnablement() {
+        hideSingleReferenceTagCheckBox.isEnabled = showReferenceCountTagCheckBox.isSelected
+    }
+
     /** Resets all controls to the built-in defaults declared on [State]. */
     private fun resetToDefaults() {
         springKeyMatchingCheckBox.isSelected = DEFAULTS.springKeyMatchingEnabled
         matchAcrossModulesCheckBox.isSelected = DEFAULTS.matchAcrossModules
         includeExcludedFoldersCheckBox.isSelected = DEFAULTS.includeExcludedFolders
         showReferenceCountTagCheckBox.isSelected = DEFAULTS.showReferenceCountTag
+        hideSingleReferenceTagCheckBox.isSelected = DEFAULTS.hideSingleReferenceTag
         if (DEFAULTS.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
         bindings.forEach { it.loadDefault() }
+        updateReferenceCountTagEnablement()
     }
 
     /**

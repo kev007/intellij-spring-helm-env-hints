@@ -56,6 +56,10 @@ qualifies as both a Spring file and a Helm template cannot self-resolve.
   <kbd>Inlay Hints</kbd> → <kbd>Other</kbd>. The count is the number of *deduplicated*
   targets outside the current file — exactly what <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>
   would offer — so an env var without a counterpart is never tagged.
+- **Hide the tag when there is only one reference** — on by default, nested under the toggle
+  above. A lone target is already reachable with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>,
+  so the `1 ref` tag adds clutter without adding information; disable it to tag those
+  occurrences too.
 - **Color Mode** — background highlight (with per-theme alpha) or font colour; separate light
   and dark theme colours for matched/unmatched plus the Spring reference underline.
 - **Debug: Current Matches** — dumps the live index per scope as matched / Helm-only /

@@ -38,6 +38,9 @@ private const val MAX_TOOLTIP_ENTRIES = 10
  *
  * Clicking the tag navigates to the lone target, or opens the list of targets.
  *
+ * Occurrences without a counterpart are never tagged, and single-counterpart occurrences are
+ * skipped as well unless `hideSingleReferenceTag` is turned off in the plugin settings.
+ *
  * The collector drives the traversal itself ([OwnBypassCollector]) rather than reacting to
  * every element the platform walks
  * ([com.intellij.codeInsight.hints.declarative.SharedBypassCollector]). That is deliberate
@@ -67,11 +70,19 @@ class EnvRefCountInlayProvider : InlayHintsProvider {
         }
         // Nothing to walk when the file carries no YAML root at all (e.g. a Helm *.tpl file).
         if (file.yamlRoot() == null) return null
-        return EnvRefCountCollector(fromSpring)
+        return EnvRefCountCollector(fromSpring, HelmEnvHintsSettings.instance.state.hideSingleReferenceTag)
     }
 }
 
-private class EnvRefCountCollector(private val fromSpring: Boolean) : OwnBypassCollector {
+/**
+ * @param hideSingleRef when true, occurrences resolving to exactly one counterpart are left
+ *        untagged; a lone target is already reachable with ctrl/cmd-click, so the "1 ref" tag
+ *        would only add clutter.
+ */
+private class EnvRefCountCollector(
+    private val fromSpring: Boolean,
+    private val hideSingleRef: Boolean,
+) : OwnBypassCollector {
 
     override fun collectHintsForFile(file: PsiFile, sink: InlayTreeSink) {
         val vf = file.virtualFile ?: return
@@ -80,7 +91,8 @@ private class EnvRefCountCollector(private val fromSpring: Boolean) : OwnBypassC
 
         for (span in envSpansInFile(yaml, fromSpring)) {
             val refs = counterpartRefs(span.envVar, file.project, module, vf, fromSpring)
-            if (refs.size == 1) continue
+//            if (refs.isEmpty()) continue
+            if (hideSingleRef && refs.size == 1) continue
             sink.addPresentation(
                 position = InlineInlayPosition(span.tagOffset, relatedToPrevious = true),
                 tooltip = tooltip(span.envVar, refs),
