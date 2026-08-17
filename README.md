@@ -99,3 +99,8 @@ Install a built ZIP via <kbd>Settings</kbd> → <kbd>Plugins</kbd> → gear icon
 <kbd>Install Plugin from Disk…</kbd>.
 
 Platform target `2025.2.6.2`; depends on the bundled `org.jetbrains.plugins.yaml` plugin.
+
+## License
+
+[Apache License 2.0](LICENSE)
+
