@@ -1,12 +1,15 @@
 package com.github.kev007.intellijspringhelmenvhints.settings
 
+import com.github.kev007.intellijspringhelmenvhints.navigation.ModuleDebugInfo
 import com.github.kev007.intellijspringhelmenvhints.navigation.getDebugInfo
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColorPanel
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBRadioButton
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.dsl.builder.Align
+import com.intellij.ui.dsl.builder.Panel
 import com.intellij.ui.dsl.builder.panel
 import java.awt.Color
 import java.awt.Dimension
@@ -16,15 +19,53 @@ import javax.swing.JPanel
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
 
+private typealias State = HelmEnvHintsSettings.State
+
+/** Built-in defaults, read straight off a fresh [State] so they can never drift out of sync. */
+private val DEFAULTS = State()
+
+/**
+ * Binds one [ColorPanel] (plus an optional alpha spinner) to a packed-ARGB field of [State].
+ *
+ * Keeping the picker together with its state accessors lets `reset`/`apply`/`isModified`/
+ * `resetToDefaults` all be driven by a single list instead of repeating the same ten
+ * colours four times over.
+ */
+private class ColorBinding(
+    val picker: ColorPanel,
+    val alphaSpinner: JSpinner?,
+    private val read: (State) -> Int,
+    private val write: (State, Int) -> Unit,
+) {
+    /** Current UI value as packed ARGB; [fallback] is used while no colour is selected. */
+    private fun uiArgb(fallback: Int): Int {
+        val c = picker.selectedColor ?: return fallback
+        val alpha = alphaSpinner?.let { (it.value as Int).coerceIn(0, 255) } ?: 255
+        return Color(c.red, c.green, c.blue, alpha).rgb
+    }
+
+    private fun load(argb: Int) {
+        val c = Color(argb, true)
+        // ColorPanel has no alpha channel, so RGB and alpha are edited separately.
+        picker.selectedColor = Color(c.red, c.green, c.blue)
+        alphaSpinner?.value = c.alpha
+    }
+
+    fun reset(state: State) = load(read(state))
+    fun loadDefault() = load(read(DEFAULTS))
+    fun apply(state: State) = write(state, uiArgb(read(state)))
+    fun isModified(state: State) = uiArgb(read(state)) != read(state)
+}
+
 /**
  * Settings UI for Spring Helm Env Hints.
  *
  * Sections:
- *  • Matching – toggle for Spring property key matching.
- *  • Color Mode – radio buttons selecting between background highlight and font color.
- *  • Highlight Colors (Light / Dark theme) – visible only in highlight mode.
- *  • Font Colors (Light / Dark theme) – visible only in font-color mode.
- *  • Debug accordion – collapsible panel showing the current project's env-var match state.
+ *  • Matching – Spring property-key matching, cross-module matching and excluded-folder
+ *    scanning toggles.
+ *  • Color Mode – background highlight vs font color; selects which colour section is shown.
+ *  • Highlight / Font Colors (Light + Dark theme).
+ *  • Debug accordion – collapsible view of the current project's env-var match state.
  */
 class HelmEnvHintsSettingsPanel(private val project: Project) {
 
@@ -35,30 +76,41 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     private val matchAcrossModulesCheckBox = JBCheckBox(
         "Match env vars across all project modules"
     )
+    private val includeExcludedFoldersCheckBox = JBCheckBox(
+        "Scan folders excluded in the project structure (build, target, out, …)"
+    )
 
     // ─── Mode radio buttons ──────────────────────────────────────────────────
     private val useHighlightRadio = JBRadioButton("Background highlight")
     private val useFontColorRadio = JBRadioButton("Font color")
 
-    // ─── Color pickers ────────────────────────────────────────────────────────
-    private val matchedBgLightPicker    = ColorPanel()
-    private val matchedBgDarkPicker     = ColorPanel()
-    private val unmatchedBgLightPicker  = ColorPanel()
-    private val unmatchedBgDarkPicker   = ColorPanel()
-    private val springUlLightPicker     = ColorPanel()
-    private val springUlDarkPicker      = ColorPanel()
+    // ─── Colour bindings (declaration order is independent of the layout) ────
+    private val matchedBgLight   = binding(alpha = true,
+        { it.matchedBgLightArgb },       { s, v -> s.matchedBgLightArgb = v })
+    private val matchedBgDark    = binding(alpha = true,
+        { it.matchedBgDarkArgb },        { s, v -> s.matchedBgDarkArgb = v })
+    private val unmatchedBgLight = binding(alpha = true,
+        { it.unmatchedBgLightArgb },     { s, v -> s.unmatchedBgLightArgb = v })
+    private val unmatchedBgDark  = binding(alpha = true,
+        { it.unmatchedBgDarkArgb },      { s, v -> s.unmatchedBgDarkArgb = v })
+    private val springUlLight    = binding(alpha = false,
+        { it.springUnderlineLightArgb }, { s, v -> s.springUnderlineLightArgb = v })
+    private val springUlDark     = binding(alpha = false,
+        { it.springUnderlineDarkArgb },  { s, v -> s.springUnderlineDarkArgb = v })
+    private val matchedFgLight   = binding(alpha = false,
+        { it.matchedFgLightArgb },       { s, v -> s.matchedFgLightArgb = v })
+    private val matchedFgDark    = binding(alpha = false,
+        { it.matchedFgDarkArgb },        { s, v -> s.matchedFgDarkArgb = v })
+    private val unmatchedFgLight = binding(alpha = false,
+        { it.unmatchedFgLightArgb },     { s, v -> s.unmatchedFgLightArgb = v })
+    private val unmatchedFgDark  = binding(alpha = false,
+        { it.unmatchedFgDarkArgb },      { s, v -> s.unmatchedFgDarkArgb = v })
 
-    // Alpha spinners – created lazily via helper to avoid field-init ordering issues
-    private val matchedBgLightAlpha    = makeAlphaSpinner()
-    private val matchedBgDarkAlpha     = makeAlphaSpinner()
-    private val unmatchedBgLightAlpha  = makeAlphaSpinner()
-    private val unmatchedBgDarkAlpha   = makeAlphaSpinner()
-
-    // ─── Font color pickers ──────────────────────────────────────────────────
-    private val matchedFgLightPicker   = ColorPanel()
-    private val matchedFgDarkPicker    = ColorPanel()
-    private val unmatchedFgLightPicker = ColorPanel()
-    private val unmatchedFgDarkPicker  = ColorPanel()
+    private val bindings = listOf(
+        matchedBgLight, matchedBgDark, unmatchedBgLight, unmatchedBgDark,
+        springUlLight, springUlDark,
+        matchedFgLight, matchedFgDark, unmatchedFgLight, unmatchedFgDark,
+    )
 
     // ─── Debug text area ─────────────────────────────────────────────────────
     private val debugArea = JBTextArea(20, 60).apply {
@@ -74,43 +126,26 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     // ─── Public API ──────────────────────────────────────────────────────────
 
     fun createPanel(): JComponent {
-        // Build the two conditionally-visible color sections as plain Swing panels
         val bgSection = panel {
             group("Highlight Colors – Light Theme") {
-                row("Matched background:") {
-                    cell(matchedBgLightPicker)
-                    label("  Alpha (0–255):")
-                    cell(matchedBgLightAlpha)
-                }
-                row("Unmatched background:") {
-                    cell(unmatchedBgLightPicker)
-                    label("  Alpha (0–255):")
-                    cell(unmatchedBgLightAlpha)
-                }
-                row("Spring underline:") { cell(springUlLightPicker) }
+                colorRow("Matched background:", matchedBgLight)
+                colorRow("Unmatched background:", unmatchedBgLight)
+                colorRow("Spring underline:", springUlLight)
             }
             group("Highlight Colors – Dark Theme") {
-                row("Matched background:") {
-                    cell(matchedBgDarkPicker)
-                    label("  Alpha (0–255):")
-                    cell(matchedBgDarkAlpha)
-                }
-                row("Unmatched background:") {
-                    cell(unmatchedBgDarkPicker)
-                    label("  Alpha (0–255):")
-                    cell(unmatchedBgDarkAlpha)
-                }
-                row("Spring underline:") { cell(springUlDarkPicker) }
+                colorRow("Matched background:", matchedBgDark)
+                colorRow("Unmatched background:", unmatchedBgDark)
+                colorRow("Spring underline:", springUlDark)
             }
         }
         val fgSection = panel {
             group("Font Colors – Light Theme") {
-                row("Matched font color:")   { cell(matchedFgLightPicker) }
-                row("Unmatched font color:") { cell(unmatchedFgLightPicker) }
+                colorRow("Matched font color:", matchedFgLight)
+                colorRow("Unmatched font color:", unmatchedFgLight)
             }
             group("Font Colors – Dark Theme") {
-                row("Matched font color:")   { cell(matchedFgDarkPicker) }
-                row("Unmatched font color:") { cell(unmatchedFgDarkPicker) }
+                colorRow("Matched font color:", matchedFgDark)
+                colorRow("Unmatched font color:", unmatchedFgDark)
             }
         }
 
@@ -137,6 +172,14 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
                     comment(
                         "When enabled, env vars are matched across every module in the project. " +
                         "Disable to confine matching to the module that owns each file."
+                    )
+                }
+                row { cell(includeExcludedFoldersCheckBox) }
+                row {
+                    comment(
+                        "When enabled, YAML files inside excluded folders (generated / build " +
+                        "output) are indexed too. Disable to skip them, which is usually what " +
+                        "you want since they are copies of the real sources."
                     )
                 }
             }
@@ -171,17 +214,9 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         val s = HelmEnvHintsSettings.instance.state
         springKeyMatchingCheckBox.isSelected = s.springKeyMatchingEnabled
         matchAcrossModulesCheckBox.isSelected = s.matchAcrossModules
+        includeExcludedFoldersCheckBox.isSelected = s.includeExcludedFolders
         if (s.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
-        loadColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha,   s.matchedBgLightArgb)
-        loadColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha,    s.matchedBgDarkArgb)
-        loadColorWithAlpha(unmatchedBgLightPicker, unmatchedBgLightAlpha, s.unmatchedBgLightArgb)
-        loadColorWithAlpha(unmatchedBgDarkPicker,  unmatchedBgDarkAlpha,  s.unmatchedBgDarkArgb)
-        loadOpaqueColor(springUlLightPicker, s.springUnderlineLightArgb)
-        loadOpaqueColor(springUlDarkPicker,  s.springUnderlineDarkArgb)
-        loadOpaqueColor(matchedFgLightPicker,   s.matchedFgLightArgb)
-        loadOpaqueColor(matchedFgDarkPicker,    s.matchedFgDarkArgb)
-        loadOpaqueColor(unmatchedFgLightPicker, s.unmatchedFgLightArgb)
-        loadOpaqueColor(unmatchedFgDarkPicker,  s.unmatchedFgDarkArgb)
+        bindings.forEach { it.reset(s) }
         // Sync section visibility in case createPanel() was already called
         updateColorSectionVisibility()
     }
@@ -189,19 +224,11 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
     /** Persist UI control values into settings. */
     fun apply() {
         val s = HelmEnvHintsSettings.instance.state
-        s.springKeyMatchingEnabled  = springKeyMatchingCheckBox.isSelected
-        s.matchAcrossModules        = matchAcrossModulesCheckBox.isSelected
-        s.useTextColor              = useFontColorRadio.isSelected
-        s.matchedBgLightArgb        = readColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha)
-        s.matchedBgDarkArgb         = readColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha)
-        s.unmatchedBgLightArgb      = readColorWithAlpha(unmatchedBgLightPicker, unmatchedBgLightAlpha)
-        s.unmatchedBgDarkArgb       = readColorWithAlpha(unmatchedBgDarkPicker,  unmatchedBgDarkAlpha)
-        springUlLightPicker.selectedColor?.let { s.springUnderlineLightArgb = it.rgb }
-        springUlDarkPicker.selectedColor?.let  { s.springUnderlineDarkArgb  = it.rgb }
-        matchedFgLightPicker.selectedColor?.let   { s.matchedFgLightArgb   = it.rgb }
-        matchedFgDarkPicker.selectedColor?.let    { s.matchedFgDarkArgb    = it.rgb }
-        unmatchedFgLightPicker.selectedColor?.let { s.unmatchedFgLightArgb = it.rgb }
-        unmatchedFgDarkPicker.selectedColor?.let  { s.unmatchedFgDarkArgb  = it.rgb }
+        s.springKeyMatchingEnabled = springKeyMatchingCheckBox.isSelected
+        s.matchAcrossModules       = matchAcrossModulesCheckBox.isSelected
+        s.includeExcludedFolders   = includeExcludedFoldersCheckBox.isSelected
+        s.useTextColor             = useFontColorRadio.isSelected
+        bindings.forEach { it.apply(s) }
     }
 
     /** Returns true when the UI differs from the persisted settings. */
@@ -209,20 +236,28 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         val s = HelmEnvHintsSettings.instance.state
         return springKeyMatchingCheckBox.isSelected != s.springKeyMatchingEnabled ||
                matchAcrossModulesCheckBox.isSelected != s.matchAcrossModules ||
+               includeExcludedFoldersCheckBox.isSelected != s.includeExcludedFolders ||
                useFontColorRadio.isSelected != s.useTextColor ||
-               readColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha)   != s.matchedBgLightArgb  ||
-               readColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha)    != s.matchedBgDarkArgb   ||
-               readColorWithAlpha(unmatchedBgLightPicker, unmatchedBgLightAlpha) != s.unmatchedBgLightArgb ||
-               readColorWithAlpha(unmatchedBgDarkPicker,  unmatchedBgDarkAlpha)  != s.unmatchedBgDarkArgb  ||
-               springUlLightPicker.selectedColor?.rgb != s.springUnderlineLightArgb ||
-               springUlDarkPicker.selectedColor?.rgb  != s.springUnderlineDarkArgb  ||
-               matchedFgLightPicker.selectedColor?.rgb   != s.matchedFgLightArgb   ||
-               matchedFgDarkPicker.selectedColor?.rgb    != s.matchedFgDarkArgb    ||
-               unmatchedFgLightPicker.selectedColor?.rgb != s.unmatchedFgLightArgb ||
-               unmatchedFgDarkPicker.selectedColor?.rgb  != s.unmatchedFgDarkArgb
+               bindings.any { it.isModified(s) }
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────────
+
+    private fun binding(
+        alpha: Boolean,
+        read: (State) -> Int,
+        write: (State, Int) -> Unit,
+    ) = ColorBinding(ColorPanel(), if (alpha) makeAlphaSpinner() else null, read, write)
+
+    private fun Panel.colorRow(label: String, binding: ColorBinding) {
+        row(label) {
+            cell(binding.picker)
+            binding.alphaSpinner?.let {
+                label("  Alpha (0–255):")
+                cell(it)
+            }
+        }
+    }
 
     /** Shows the color section that corresponds to the currently-selected radio button. */
     private fun updateColorSectionVisibility() {
@@ -235,75 +270,51 @@ class HelmEnvHintsSettingsPanel(private val project: Project) {
         }
     }
 
-    /** Resets all controls to the built-in defaults. */
+    /** Resets all controls to the built-in defaults declared on [State]. */
     private fun resetToDefaults() {
-        springKeyMatchingCheckBox.isSelected = true
-        matchAcrossModulesCheckBox.isSelected = false
-        useHighlightRadio.isSelected = true
-        loadColorWithAlpha(matchedBgLightPicker,   matchedBgLightAlpha,   HelmEnvHintsSettings.DEF_MATCHED_BG_LIGHT.rgb)
-        loadColorWithAlpha(matchedBgDarkPicker,    matchedBgDarkAlpha,    HelmEnvHintsSettings.DEF_MATCHED_BG_DARK.rgb)
-        loadColorWithAlpha(unmatchedBgLightPicker, unmatchedBgLightAlpha, HelmEnvHintsSettings.DEF_UNMATCHED_BG_LIGHT.rgb)
-        loadColorWithAlpha(unmatchedBgDarkPicker,  unmatchedBgDarkAlpha,  HelmEnvHintsSettings.DEF_UNMATCHED_BG_DARK.rgb)
-        loadOpaqueColor(springUlLightPicker, HelmEnvHintsSettings.DEF_SPRING_UL_LIGHT.rgb)
-        loadOpaqueColor(springUlDarkPicker,  HelmEnvHintsSettings.DEF_SPRING_UL_DARK.rgb)
-        loadOpaqueColor(matchedFgLightPicker,   HelmEnvHintsSettings.DEF_MATCHED_FG_LIGHT.rgb)
-        loadOpaqueColor(matchedFgDarkPicker,    HelmEnvHintsSettings.DEF_MATCHED_FG_DARK.rgb)
-        loadOpaqueColor(unmatchedFgLightPicker, HelmEnvHintsSettings.DEF_UNMATCHED_FG_LIGHT.rgb)
-        loadOpaqueColor(unmatchedFgDarkPicker,  HelmEnvHintsSettings.DEF_UNMATCHED_FG_DARK.rgb)
+        springKeyMatchingCheckBox.isSelected = DEFAULTS.springKeyMatchingEnabled
+        matchAcrossModulesCheckBox.isSelected = DEFAULTS.matchAcrossModules
+        includeExcludedFoldersCheckBox.isSelected = DEFAULTS.includeExcludedFolders
+        if (DEFAULTS.useTextColor) useFontColorRadio.isSelected = true else useHighlightRadio.isSelected = true
+        bindings.forEach { it.loadDefault() }
     }
 
-    /** Queries the project's env-var index and renders the results in [debugArea]. */
+    /**
+     * Queries the project's env-var index and renders the results in [debugArea].
+     * The index walks PSI, so it must be read under a read action — this runs on the EDT.
+     */
     private fun refreshDebug() {
-        val infos = getDebugInfo(project)
+        val infos = ReadAction.compute<List<ModuleDebugInfo>, RuntimeException> { getDebugInfo(project) }
         if (infos.isEmpty()) {
             debugArea.text = "(No env var data found.\n" +
                 "Make sure the project contains Spring application*.yml and Helm templates/ YAML files.)"
             return
         }
-        val sb = StringBuilder()
-        for (m in infos) {
-            sb.appendLine("══════════════════════════════════════════")
-            sb.appendLine("  Module: ${m.moduleName}")
-            sb.appendLine("══════════════════════════════════════════")
-            if (m.matchedVars.isEmpty() && m.helmOnlyVars.isEmpty() && m.springOnlyVars.isEmpty()) {
-                sb.appendLine("  (No env vars found in this module)")
-            } else {
-                appendDebugSection(sb, "✓  Matched (both Helm + Spring)", m.matchedVars)
-                appendDebugSection(sb, "⚠  Helm-only  (no Spring counterpart)", m.helmOnlyVars)
-                appendDebugSection(sb, "⚠  Spring-only (no Helm counterpart)", m.springOnlyVars)
+        debugArea.text = buildString {
+            for (m in infos) {
+                appendLine("══════════════════════════════════════════")
+                appendLine("  Module: ${m.moduleName}")
+                appendLine("══════════════════════════════════════════")
+                val sections = listOf(
+                    "✓  Matched (both Helm + Spring)" to m.matchedVars,
+                    "⚠  Helm-only  (no Spring counterpart)" to m.helmOnlyVars,
+                    "⚠  Spring-only (no Helm counterpart)" to m.springOnlyVars,
+                )
+                if (sections.all { it.second.isEmpty() }) {
+                    appendLine("  (No env vars found in this module)")
+                } else {
+                    for ((header, vars) in sections) {
+                        appendLine("  $header (${vars.size}):")
+                        if (vars.isEmpty()) appendLine("    (none)") else vars.forEach { appendLine("    · $it") }
+                    }
+                }
+                appendLine()
             }
-            sb.appendLine()
         }
-        debugArea.text = sb.toString()
         debugArea.caretPosition = 0
     }
 
-    private fun appendDebugSection(sb: StringBuilder, header: String, vars: List<String>) {
-        sb.appendLine("  $header (${vars.size}):")
-        if (vars.isEmpty()) sb.appendLine("    (none)")
-        else vars.forEach { sb.appendLine("    · $it") }
-    }
-
-    // ─── Color helpers ────────────────────────────────────────────────────────
-
     private fun makeAlphaSpinner() = JSpinner(SpinnerNumberModel(50, 0, 255, 1)).apply {
         preferredSize = Dimension(65, preferredSize.height)
-    }
-
-    private fun loadColorWithAlpha(picker: ColorPanel, spinner: JSpinner, argb: Int) {
-        val c = Color(argb, true)
-        picker.selectedColor = Color(c.red, c.green, c.blue)
-        spinner.value = c.alpha
-    }
-
-    private fun loadOpaqueColor(picker: ColorPanel, argb: Int) {
-        val c = Color(argb, true)
-        picker.selectedColor = Color(c.red, c.green, c.blue)
-    }
-
-    private fun readColorWithAlpha(picker: ColorPanel, spinner: JSpinner): Int {
-        val c = picker.selectedColor ?: return 0
-        val alpha = (spinner.value as Int).coerceIn(0, 255)
-        return Color(c.red, c.green, c.blue, alpha).rgb
     }
 }

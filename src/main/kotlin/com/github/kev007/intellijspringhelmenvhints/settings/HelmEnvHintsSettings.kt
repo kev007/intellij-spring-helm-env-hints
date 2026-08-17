@@ -6,11 +6,18 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.util.SimpleModificationTracker
-import java.awt.Color
+
+/**
+ * Packs a colour into the same ARGB layout as `java.awt.Color.getRGB()`.
+ * Used only to express the persisted defaults; the light/dark pair is turned into a
+ * theme-aware `JBColor` at render time by the annotator.
+ */
+private fun argb(r: Int, g: Int, b: Int, a: Int = 255): Int =
+    (a shl 24) or (r shl 16) or (g shl 8) or b
 
 /**
  * Application-level persistent settings for Spring Helm Env Hints.
- * Colors are stored as packed ARGB integers (matching [Color.getRGB]).
+ * Colours are stored as packed ARGB integers, one value per (role, theme) pair.
  */
 @Service(Service.Level.APP)
 @State(name = "HelmEnvHintsSettings", storages = [Storage("helmEnvHints.xml")])
@@ -22,6 +29,7 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
      */
     val indexTracker = SimpleModificationTracker()
 
+    /** Field initialisers here are the single source of truth for the built-in defaults. */
     class State {
         // Whether to use font (foreground) colour instead of background highlight
         @JvmField var useTextColor: Boolean = false
@@ -31,20 +39,25 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
         // Whether env vars are matched across ALL project modules. When false,
         // matching is confined to the module that owns each file (the default).
         @JvmField var matchAcrossModules: Boolean = false
-        // Background colours for "matched" highlight (transparent blue)
-        @JvmField var matchedBgLightArgb: Int  = Color(11, 87, 208, 50).rgb
-        @JvmField var matchedBgDarkArgb: Int   = Color(127, 178, 255, 60).rgb
-        // Background colours for "unmatched" highlight (transparent red)
-        @JvmField var unmatchedBgLightArgb: Int = Color(217, 48, 37, 50).rgb
-        @JvmField var unmatchedBgDarkArgb: Int  = Color(255, 138, 128, 60).rgb
+        // Whether folders excluded in the IntelliJ project structure (build, target,
+        // out, … – typically generated code) are scanned when building the env-var
+        // index. Off by default: generated copies of resources would otherwise
+        // duplicate (and can falsely create) matches.
+        @JvmField var includeExcludedFolders: Boolean = false
+        // Background colours for "matched" highlight (translucent blue)
+        @JvmField var matchedBgLightArgb: Int   = argb(11, 87, 208, a = 50)
+        @JvmField var matchedBgDarkArgb: Int    = argb(127, 178, 255, a = 60)
+        // Background colours for "unmatched" highlight (translucent red)
+        @JvmField var unmatchedBgLightArgb: Int = argb(217, 48, 37, a = 50)
+        @JvmField var unmatchedBgDarkArgb: Int  = argb(255, 138, 128, a = 60)
         // Underline colour for Spring matched references (opaque)
-        @JvmField var springUnderlineLightArgb: Int = Color(11, 87, 208).rgb
-        @JvmField var springUnderlineDarkArgb: Int  = Color(127, 178, 255).rgb
+        @JvmField var springUnderlineLightArgb: Int = argb(11, 87, 208)
+        @JvmField var springUnderlineDarkArgb: Int  = argb(127, 178, 255)
         // Font (foreground) colours – used when useTextColor = true
-        @JvmField var matchedFgLightArgb: Int   = Color(11, 87, 208).rgb
-        @JvmField var matchedFgDarkArgb: Int    = Color(100, 180, 255).rgb
-        @JvmField var unmatchedFgLightArgb: Int = Color(180, 30, 20).rgb
-        @JvmField var unmatchedFgDarkArgb: Int  = Color(255, 130, 100).rgb
+        @JvmField var matchedFgLightArgb: Int   = argb(11, 87, 208)
+        @JvmField var matchedFgDarkArgb: Int    = argb(100, 180, 255)
+        @JvmField var unmatchedFgLightArgb: Int = argb(180, 30, 20)
+        @JvmField var unmatchedFgDarkArgb: Int  = argb(255, 130, 100)
     }
 
     private var myState = State()
@@ -55,17 +68,5 @@ class HelmEnvHintsSettings : PersistentStateComponent<HelmEnvHintsSettings.State
     companion object {
         val instance: HelmEnvHintsSettings
             get() = ApplicationManager.getApplication().getService(HelmEnvHintsSettings::class.java)
-
-        // Defaults – used for "Reset to Defaults" button
-        val DEF_MATCHED_BG_LIGHT:    Color = Color(11, 87, 208, 50)
-        val DEF_MATCHED_BG_DARK:     Color = Color(127, 178, 255, 60)
-        val DEF_UNMATCHED_BG_LIGHT:  Color = Color(217, 48, 37, 50)
-        val DEF_UNMATCHED_BG_DARK:   Color = Color(255, 138, 128, 60)
-        val DEF_SPRING_UL_LIGHT:     Color = Color(11, 87, 208)
-        val DEF_SPRING_UL_DARK:      Color = Color(127, 178, 255)
-        val DEF_MATCHED_FG_LIGHT:    Color = Color(11, 87, 208)
-        val DEF_MATCHED_FG_DARK:     Color = Color(100, 180, 255)
-        val DEF_UNMATCHED_FG_LIGHT:  Color = Color(180, 30, 20)
-        val DEF_UNMATCHED_FG_DARK:   Color = Color(255, 130, 100)
     }
 }

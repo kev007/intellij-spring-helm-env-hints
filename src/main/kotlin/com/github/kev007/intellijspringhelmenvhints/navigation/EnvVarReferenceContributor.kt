@@ -17,10 +17,11 @@ import org.jetbrains.yaml.YAMLLanguage
 
 /**
  * Registers bidirectional references between Spring application YAML and Helm template YAML:
- * - Spring ${ENV_VAR} values → Helm `name: ENV_VAR` elements
- * - Helm `name: ENV_VAR` elements → Spring property keys
+ * - Spring `${ENV_VAR}` values → Helm `name: ENV_VAR` elements
+ * - Helm `name: ENV_VAR` elements → Spring occurrences of the same var
  *
- * Enables Ctrl+Click navigation and rename refactoring. All resolution is module-scoped.
+ * Enables Ctrl+Click navigation and rename refactoring. All resolution is scope-scoped
+ * (see [resolveEnvMatch]).
  */
 class EnvVarReferenceContributor : PsiReferenceContributor() {
 
@@ -38,25 +39,23 @@ class EnvVarReferenceContributor : PsiReferenceContributor() {
                     val vf = element.containingFile?.virtualFile ?: return PsiReference.EMPTY_ARRAY
                     val module = ModuleUtil.findModuleForPsiElement(element) ?: return PsiReference.EMPTY_ARRAY
 
-                    if (vf.isSpringApp()) {
-                        val (envVar, range) = springRefInElement(element) ?: return PsiReference.EMPTY_ARRAY
-                        return arrayOf(EnvVarReference(element, envVar, range, resolver = {
-                            findHelmTargets(envVar, element.project, module)
-                        }))
+                    // Both directions differ only in how the span is found and which side is resolved.
+                    val span: EnvSpan
+                    val targets: (String) -> List<PsiElement>
+                    when {
+                        vf.isSpringApp() -> {
+                            span = springRefSpans(element).firstOrNull() ?: return PsiReference.EMPTY_ARRAY
+                            targets = { findHelmTargets(it, element.project, module) }
+                        }
+                        vf.isHelmTemplate() -> {
+                            span = helmEnvNameSpan(element) ?: return PsiReference.EMPTY_ARRAY
+                            targets = { findSpringTargets(it, element.project, module) }
+                        }
+                        else -> return PsiReference.EMPTY_ARRAY
                     }
-
-                    if (vf.isHelmTemplate()) {
-                        val span = helmEnvNameSpan(element) ?: return PsiReference.EMPTY_ARRAY
-                        val range = TextRange(
-                            span.startOffset - element.textRange.startOffset,
-                            span.endOffset - element.textRange.startOffset,
-                        )
-                        return arrayOf(EnvVarReference(element, span.envVar, range, resolver = {
-                            findSpringTargets(span.envVar, element.project, module)
-                        }))
-                    }
-
-                    return PsiReference.EMPTY_ARRAY
+                    return arrayOf(
+                        EnvVarReference(element, span.relativeTo(element)) { targets(span.envVar) }
+                    )
                 }
             },
         )
@@ -65,7 +64,6 @@ class EnvVarReferenceContributor : PsiReferenceContributor() {
 
 private class EnvVarReference(
     element: PsiElement,
-    private val envVar: String,
     range: TextRange,
     private val resolver: () -> List<PsiElement>,
 ) : PsiPolyVariantReferenceBase<PsiElement>(element, range, false) {
@@ -78,7 +76,3 @@ private class EnvVarReference(
 
     override fun getVariants(): Array<Any> = emptyArray()
 }
-
-
-
-

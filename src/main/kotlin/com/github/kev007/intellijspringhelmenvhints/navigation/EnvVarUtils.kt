@@ -2,14 +2,17 @@ package com.github.kev007.intellijspringhelmenvhints.navigation
 
 import com.github.kev007.intellijspringhelmenvhints.settings.HelmEnvHintsSettings
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.debug
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileFilter
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
@@ -48,14 +51,11 @@ internal fun VirtualFile.isHelmTemplate() =
 internal fun VirtualFile.yamlPsi(psiManager: PsiManager): YAMLFile? =
     psiManager.findViewProvider(this)?.getPsi(YAMLLanguage.INSTANCE) as? YAMLFile
 
-/** [yamlPsi] variant that starts from an already-resolved [PsiFile]. */
-internal fun PsiFile.yamlRoot(): YAMLFile? =
-    viewProvider.getPsi(YAMLLanguage.INSTANCE) as? YAMLFile
 
 // ─── Spring YAML utilities ────────────────────────────────────────────────────
 
 /** Matches ${NAME} and ${NAME:default} in Spring property values. */
-internal val ENV_REF_REGEX = Regex("""\$\{([A-Za-z_][A-Za-z0-9_.\-]*?)(?::[^}]*)?\}""")
+internal val ENV_REF_REGEX = Regex("""\$\{([A-Za-z_][A-Za-z0-9_.\-]*?)(?::[^}]*)?}""")
 
 internal fun springKeyToEnvVar(key: String): String =
     key.replace("[", "_").replace("]", "")
@@ -92,41 +92,41 @@ private fun yamlKeyPath(kv: YAMLKeyValue): String {
     return parts.joinToString(".")
 }
 
-internal data class EnvSpan(val envVar: String, val startOffset: Int, val endOffset: Int)
+/** An env var name occurrence, with absolute (file-level) offsets. */
+internal data class EnvSpan(val envVar: String, val startOffset: Int, val endOffset: Int) {
+    operator fun contains(offset: Int) = offset in startOffset until endOffset
 
-/** Returns all ${ENV_VAR} NAME spans that fall within the absolute range [start, end). */
-internal fun envSpansInRange(text: String, start: Int, end: Int): List<EnvSpan> =
-    ENV_REF_REGEX.findAll(text).mapNotNull { m ->
-        val g = m.groups[1] ?: return@mapNotNull null
-        if (g.range.last + 1 <= start || g.range.first >= end) null
-        else EnvSpan(g.value, g.range.first, g.range.last + 1)
-    }.toList()
-
-/**
- * Finds the first ${ENV_VAR} pattern contained within [element]'s text range.
- * Returns the env var name and the range of the NAME group relative to [element].
- */
-internal fun springRefInElement(element: PsiElement): Pair<String, TextRange>? {
-    val elemRange = element.textRange ?: return null
-    val fileText = element.containingFile?.text ?: return null
-    val match = ENV_REF_REGEX.findAll(fileText).firstOrNull { m ->
-        m.range.first >= elemRange.startOffset && m.range.last + 1 <= elemRange.endOffset
-    } ?: return null
-    val g = match.groups[1] ?: return null
-    return g.value to TextRange(
-        g.range.first - elemRange.startOffset,
-        g.range.last + 1 - elemRange.startOffset,
-    )
+    /** This span expressed relative to [element]'s own text range. */
+    fun relativeTo(element: PsiElement): TextRange {
+        val base = element.textRange.startOffset
+        return TextRange(startOffset - base, endOffset - base)
+    }
 }
 
-/** Returns the logical env var name at [offset] in a Spring application file. */
+/**
+ * Returns the NAME spans of every `${NAME}` / `${NAME:default}` reference inside
+ * [element]'s own text.
+ *
+ * Scanning the element text (instead of the whole file text) keeps this linear in the
+ * element size; the reference contributor and the annotator are invoked for *every* leaf
+ * of a file, so a file-wide scan per element would be quadratic.
+ */
+internal fun springRefSpans(element: PsiElement): List<EnvSpan> {
+    val base = element.textRange?.startOffset ?: return emptyList()
+    return ENV_REF_REGEX.findAll(element.text).mapNotNull { m ->
+        m.groups[1]?.let { g -> EnvSpan(g.value, base + g.range.first, base + g.range.last + 1) }
+    }.toList()
+}
+
+/**
+ * Returns the logical env var name at [offset] in a Spring application file: either the
+ * `${ENV_VAR}` reference under the caret, or the env var derived from the enclosing
+ * property key path.
+ */
 internal fun springEnvVarAtOffset(file: PsiFile, offset: Int): String? {
-    ENV_REF_REGEX.findAll(file.text).forEach { m ->
-        val g = m.groups[1] ?: return@forEach
-        if (offset in g.range) return g.value
-    }
     var cur: PsiElement? = file.findElementAt(offset)
     while (cur != null) {
+        springRefSpans(cur).firstOrNull { offset in it }?.let { return it.envVar }
         if (cur is YAMLKeyValue) return springKeyToEnvVar(yamlKeyPath(cur))
         cur = cur.parent
     }
@@ -135,24 +135,27 @@ internal fun springEnvVarAtOffset(file: PsiFile, offset: Int): String? {
 
 // ─── Helm YAML utilities ──────────────────────────────────────────────────────
 
+/** True when [kv] is a `name:` entry under the Helm `containers > env` path. */
+private fun isHelmEnvNameKv(kv: YAMLKeyValue) = kv.keyText == "name" && isUnderEnvPath(kv)
+
+/** The unquoted, non-blank env var name held by a Helm `name:` value, or null. */
+private fun PsiElement.helmEnvName(): String? =
+    text.trim().trim('"', '\'').takeIf { it.isNotBlank() }
+
 /** Returns the env var span from a Helm `name:` value element under containers/env. */
 internal fun helmEnvNameSpan(valueElement: PsiElement): EnvSpan? {
     val kv = valueElement.parent as? YAMLKeyValue ?: return null
-    if (kv.keyText != "name" || kv.value != valueElement || !isUnderEnvPath(kv)) return null
-    val raw = valueElement.text
-    val unquoted = raw.trim().trim('"', '\'')
-    if (unquoted.isBlank()) return null
-    val localStart = raw.indexOf(unquoted).takeIf { it >= 0 } ?: return null
-    val start = valueElement.textRange.startOffset + localStart
-    return EnvSpan(unquoted, start, start + unquoted.length)
+    if (kv.value != valueElement || !isHelmEnvNameKv(kv)) return null
+    val name = valueElement.helmEnvName() ?: return null
+    val start = valueElement.textRange.startOffset + valueElement.text.indexOf(name)
+    return EnvSpan(name, start, start + name.length)
 }
 
 /** Returns the Helm env var name at [offset] from a `name:` key under containers/env. */
 internal fun helmEnvVarAtOffset(file: PsiFile, offset: Int): String? {
     var cur: PsiElement? = file.findElementAt(offset)
     while (cur != null) {
-        if (cur is YAMLKeyValue && cur.keyText == "name" && isUnderEnvPath(cur))
-            return cur.value?.text?.trim('"', '\'')?.takeIf { it.isNotBlank() }
+        if (cur is YAMLKeyValue && isHelmEnvNameKv(cur)) return cur.value?.helmEnvName()
         cur = cur.parent
     }
     return null
@@ -163,7 +166,7 @@ internal fun isUnderEnvPath(element: PsiElement): Boolean {
     var foundEnv = false
     var foundContainers = false
     var cur: PsiElement? = element.parent
-    while (cur != null) {
+    while (cur != null && !(foundEnv && foundContainers)) {
         val key = when (cur) {
             is YAMLKeyValue -> cur.keyText
             is YAMLSequence -> (cur.parent as? YAMLKeyValue)?.keyText
@@ -214,9 +217,17 @@ private fun buildIndex(project: Project): EnvIndex {
     // NOT index every module's files, otherwise matches bleed across unrelated
     // project modules.
     val visited = HashSet<String>()
+    // Folders marked "Excluded" in the project structure (build, target, out, …) hold
+    // generated copies of resources. Scanning them would duplicate — and sometimes
+    // invent — matches, so they are skipped unless the user opts in.
+    // Returning false from the filter makes iterateChildrenRecursively skip the file
+    // AND its children, so an excluded directory is never descended into.
+    val fileIndex = ProjectRootManager.getInstance(project).fileIndex
+    val fileFilter = if (HelmEnvHintsSettings.instance.state.includeExcludedFolders) null
+                     else VirtualFileFilter { !fileIndex.isExcluded(it) }
     for (module in ModuleManager.getInstance(project).modules) {
         ModuleRootManager.getInstance(module).contentRoots.forEach { root ->
-            VfsUtilCore.iterateChildrenRecursively(root, null) { vf ->
+            VfsUtilCore.iterateChildrenRecursively(root, fileFilter) { vf ->
                 if (!vf.isDirectory && vf.isYaml() && visited.add(vf.path)) {
                     val owner = ModuleUtilCore.findModuleForFile(vf, project) ?: module
                     // Resolve the YAML root through the view provider so files owned by a
@@ -314,9 +325,10 @@ private fun buildIndex(project: Project): EnvIndex {
     helmByModule.values.forEach { mergeInto(helmProjectWide, it) }
     springByModule.values.forEach { mergeInto(springProjectWide, it) }
 
-    LOG.info("Built env index for '${project.name}': scopes=${scopeIdByRoot.size}, modules=${
-        modulesWithData.map { it.name }.distinct()
-    }")
+    LOG.debug {
+        "Built env index for '${project.name}': scopes=${scopeIdByRoot.size}, " +
+            "modules=${modulesWithData.map { it.name }.distinct()}"
+    }
     return EnvIndex(scopeOfModule, helmByScope, springByScope, helmProjectWide, springProjectWide)
 }
 
@@ -333,9 +345,11 @@ private fun isSubPath(child: String, parent: String): Boolean {
 
 private fun collectHelm(yaml: YAMLFile, map: MutableMap<String, MutableList<PsiElement>>) {
     fun walk(node: PsiElement) {
-        if (node is YAMLKeyValue && node.keyText == "name" && isUnderEnvPath(node)) {
-            val name = node.value?.text?.trim('"', '\'')?.takeIf { it.isNotBlank() } ?: return
-            node.value?.let { map.getOrPut(name) { mutableListOf() } += it }
+        if (node is YAMLKeyValue && isHelmEnvNameKv(node)) {
+            val value = node.value
+            val name = value?.helmEnvName()
+            if (name != null) map.getOrPut(name) { mutableListOf() } += value
+            return
         }
         node.children.forEach(::walk)
     }
@@ -406,12 +420,13 @@ internal fun findHelmTargets(envVar: String, project: Project, module: Module): 
 internal fun findSpringTargets(envVar: String, project: Project, module: Module): List<PsiElement> =
     resolveEnvMatch(envVar, project, module)?.springElements.orEmpty()
 
-/** True when a Spring env var has a matching Helm counterpart (same single match). */
-internal fun isSpringMatched(envVar: String, project: Project, module: Module): Boolean =
-    resolveEnvMatch(envVar, project, module) != null
-
-/** True when a Helm env var has a matching Spring counterpart (same single match). */
-internal fun isHelmMatched(envVar: String, project: Project, module: Module): Boolean =
+/**
+ * True when [envVar] is present on BOTH sides within the scope of [module].
+ *
+ * Matching is symmetric by construction, so the same query answers "is this Spring
+ * reference matched?" and "is this Helm entry matched?".
+ */
+internal fun isEnvMatched(envVar: String, project: Project, module: Module): Boolean =
     resolveEnvMatch(envVar, project, module) != null
 
 /** Deduplicates PSI elements by (virtual file path, text offset). */
@@ -449,37 +464,38 @@ data class ModuleDebugInfo(
 )
 
 /**
- * Returns a [ModuleDebugInfo] list for [project], one entry per matching scope.
+ * Returns a [ModuleDebugInfo] list for [project], one entry per matching scope
+ * (or a single project-wide entry when cross-module matching is enabled).
  * Re-uses the same cached index (and the same matching rules) as the annotator
  * and goto handler, so it reflects exactly what the user sees.
  */
 fun getDebugInfo(project: Project): List<ModuleDebugInfo> {
     val index = projectEnvIndex(project)
 
+    fun summarise(
+        name: String,
+        helm: Map<String, List<PsiElement>>,
+        spring: Map<String, List<PsiElement>>,
+    ) = ModuleDebugInfo(
+        moduleName     = name,
+        matchedVars    = (helm.keys intersect spring.keys).sorted(),
+        helmOnlyVars   = (helm.keys - spring.keys).sorted(),
+        springOnlyVars = (spring.keys - helm.keys).sorted(),
+    )
+
     if (HelmEnvHintsSettings.instance.state.matchAcrossModules) {
-        val helmKeys = index.helmProjectWide.keys.toSet()
-        val springKeys = index.springProjectWide.keys.toSet()
         return listOf(
-            ModuleDebugInfo(
-                moduleName     = "All modules (project-wide matching)",
-                matchedVars    = (helmKeys intersect springKeys).sorted(),
-                helmOnlyVars   = (helmKeys - springKeys).sorted(),
-                springOnlyVars = (springKeys - helmKeys).sorted(),
-            )
+            summarise("All modules (project-wide matching)", index.helmProjectWide, index.springProjectWide)
         )
     }
 
     // One entry per scope, labelled by the member module names.
     val namesByScope = index.scopeOfModule.entries.groupBy({ it.value }, { it.key.name })
-    val scopeIds = (index.helmByScope.keys + index.springByScope.keys).toSet()
-    return scopeIds.map { scope ->
-        val helmKeys   = index.helmByScope[scope]?.keys?.toSet()   ?: emptySet()
-        val springKeys = index.springByScope[scope]?.keys?.toSet() ?: emptySet()
-        ModuleDebugInfo(
-            moduleName     = namesByScope[scope]?.sorted()?.joinToString(", ") ?: "scope-$scope",
-            matchedVars    = (helmKeys intersect springKeys).sorted(),
-            helmOnlyVars   = (helmKeys - springKeys).sorted(),
-            springOnlyVars = (springKeys - helmKeys).sorted(),
+    return (index.helmByScope.keys + index.springByScope.keys).map { scope ->
+        summarise(
+            namesByScope[scope]?.sorted()?.joinToString(", ") ?: "scope-$scope",
+            index.helmByScope[scope].orEmpty(),
+            index.springByScope[scope].orEmpty(),
         )
     }.sortedBy { it.moduleName }
 }
