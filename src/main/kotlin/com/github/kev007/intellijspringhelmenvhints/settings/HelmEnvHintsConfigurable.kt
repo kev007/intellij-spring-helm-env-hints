@@ -1,9 +1,10 @@
 package com.github.kev007.intellijspringhelmenvhints.settings
 
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
-import com.intellij.codeInsight.hints.declarative.impl.DeclarativeInlayHintsPassFactory
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
+import com.intellij.psi.PsiManager
 import javax.swing.JComponent
 
 /**
@@ -30,10 +31,17 @@ class HelmEnvHintsConfigurable(private val project: Project) : Configurable {
         settingsPanel?.apply()
         // Invalidate the cached env-var index so index-affecting settings take effect
         HelmEnvHintsSettings.instance.indexTracker.incModificationCount()
-        // Drop the cached inlay stamp so the "N refs" tags are recomputed, not reused
-        DeclarativeInlayHintsPassFactory.resetModificationStamp()
-        // Force immediate re-highlighting of all open editors in this project
-        DaemonCodeAnalyzer.getInstance(project).restart()
+        // Settings are application-level, so every open project has to pick them up.
+        for (openProject in ProjectManager.getInstance().openProjects) {
+            if (openProject.isDisposed) continue
+            // The declarative inlay pass skips a file whose cached stamp still equals the
+            // project's PSI modification count, which would make it reuse the previous
+            // "N refs" tags. Dropping the PSI caches bumps that counter and is public API,
+            // unlike DeclarativeInlayHintsPassFactory.resetModificationStamp().
+            PsiManager.getInstance(openProject).dropPsiCaches()
+            // Force immediate re-highlighting of all open editors
+            DaemonCodeAnalyzer.getInstance(openProject).restart()
+        }
     }
 
     override fun reset() {
