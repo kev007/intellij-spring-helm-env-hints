@@ -447,21 +447,66 @@ private fun projectEnvIndex(project: Project): EnvIndex =
  * the module's own scope to the whole project.
  */
 internal fun resolveEnvMatch(envVar: String, project: Project, module: Module): EnvMatch? {
-    val index = projectEnvIndex(project)
-    val helm: Map<String, List<PsiElement>>
-    val spring: Map<String, List<PsiElement>>
-    if (HelmEnvHintsSettings.instance.state.matchAcrossModules) {
-        helm = index.helmProjectWide
-        spring = index.springProjectWide
-    } else {
-        val scope = index.scopeOfModule[module] ?: return null
-        helm = index.helmByScope[scope].orEmpty()
-        spring = index.springByScope[scope].orEmpty()
-    }
+    val (helm, spring) = scopeMaps(project, module) ?: return null
     val helmElements = helm[envVar].orEmpty()
     val springElements = spring[envVar].orEmpty()
     if (helmElements.isEmpty() || springElements.isEmpty()) return null
     return EnvMatch(envVar, helmElements, springElements)
+}
+
+/**
+ * The (Helm occurrences, Spring occurrences) maps of the matching scope [module] belongs to,
+ * or the project-wide aggregates when cross-module matching is enabled. Null when [module]
+ * contributes nothing to the index.
+ */
+private fun scopeMaps(
+    project: Project,
+    module: Module,
+): Pair<Map<String, List<PsiElement>>, Map<String, List<PsiElement>>>? {
+    val index = projectEnvIndex(project)
+    if (HelmEnvHintsSettings.instance.state.matchAcrossModules) {
+        return index.helmProjectWide to index.springProjectWide
+    }
+    val scope = index.scopeOfModule[module] ?: return null
+    return index.helmByScope[scope].orEmpty() to index.springByScope[scope].orEmpty()
+}
+
+/**
+ * Every indexed occurrence of [envVar] inside the scope of [module] — Helm side *and* Spring
+ * side, including the file the caller started from.
+ *
+ * Unlike [resolveEnvMatch] this does NOT require the var to be present on both sides: rename
+ * has to update a one-sided var as well, otherwise renaming would silently do nothing for
+ * exactly the vars a user is most likely to fix.
+ */
+internal fun envOccurrences(envVar: String, project: Project, module: Module): List<PsiElement> {
+    val (helm, spring) = scopeMaps(project, module) ?: return emptyList()
+    return helm[envVar].orEmpty() + spring[envVar].orEmpty()
+}
+
+/**
+ * The absolute ranges of the *name text* of [envVar] inside [element], i.e. exactly the
+ * characters a rename has to replace.
+ *
+ * Returns an empty list for occurrences whose text is not the env var itself — most notably
+ * Spring property keys matched through the `my.service.url` → `MY_SERVICE_URL` conversion,
+ * which must not be rewritten into an env var name.
+ */
+internal fun envNameRanges(element: PsiElement, envVar: String): List<TextRange> {
+    helmEnvNameSpan(element)?.let { span ->
+        return if (span.envVar == envVar) listOf(TextRange(span.startOffset, span.endOffset))
+               else emptyList()
+    }
+    fun spansOf(e: PsiElement) = springRefSpans(e)
+        .filter { it.envVar == envVar }
+        .map { TextRange(it.startOffset, it.endOffset) }
+
+    val own = spansOf(element)
+    if (own.isNotEmpty()) return own
+    // Index entries point at the leaf token holding the name; if that token happens to hold
+    // only a fragment of the `${...}` expression, fall back to the enclosing scalar.
+    val scalar = PsiTreeUtil.getParentOfType(element, YAMLScalar::class.java) ?: return emptyList()
+    return spansOf(scalar)
 }
 
 // ─── Public lookup API (thin wrappers over the single resolver) ────────────────
@@ -523,6 +568,35 @@ internal fun counterpartRefs(
     val match = resolveEnvMatch(envVar, project, module) ?: return emptyList()
     val raw = if (fromSpring) match.helmElements else match.springElements
     return excludingSelf(deduplicated(raw), sourceFile)
+}
+
+/**
+ * The env var occurrence under [offset] in [psiFile], from whichever side the file belongs to,
+ * with the span covering the NAME text only.
+ *
+ * The caret is accepted at the closing boundary as well (`FOO|}`), matching what users expect
+ * from a rename invoked at the end of a word. Lookup goes through [yamlRoot] so Helm templates
+ * owned by a template language (HelmYAML / Go Template) work too.
+ */
+internal fun envOccurrenceAt(psiFile: PsiFile, offset: Int): EnvSpan? {
+    val vf = psiFile.virtualFile ?: return null
+    if (!vf.isYaml()) return null
+    val yaml = psiFile.yamlRoot() ?: return null
+    val isSpring = vf.isSpringApp()
+    val isHelm = vf.isHelmTemplate()
+
+    fun EnvSpan.hit() = offset in this || offset == endOffset
+
+    var cur: PsiElement? = yaml.findElementAt(offset) ?: yaml.findElementAt(offset - 1)
+    while (cur != null && cur !is PsiFile) {
+        if (isSpring) springRefSpans(cur).firstOrNull { it.hit() }?.let { return it }
+        if (isHelm) {
+            val value = if (cur is YAMLKeyValue) cur.value else cur
+            value?.let(::helmEnvNameSpan)?.takeIf { it.hit() }?.let { return it }
+        }
+        cur = cur.parent
+    }
+    return null
 }
 
 // ─── Debug / settings panel API ───────────────────────────────────────────────

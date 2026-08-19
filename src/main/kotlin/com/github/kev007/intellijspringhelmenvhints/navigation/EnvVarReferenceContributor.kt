@@ -13,49 +13,58 @@ import com.intellij.psi.PsiReferenceProvider
 import com.intellij.psi.PsiReferenceRegistrar
 import com.intellij.psi.ResolveResult
 import com.intellij.util.ProcessingContext
-import org.jetbrains.yaml.YAMLLanguage
+import org.jetbrains.yaml.psi.YAMLScalar
 
 /**
  * Registers bidirectional references between Spring application YAML and Helm template YAML:
  * - Spring `${ENV_VAR}` values → Helm `name: ENV_VAR` elements
  * - Helm `name: ENV_VAR` elements → Spring occurrences of the same var
  *
- * Enables Ctrl+Click navigation and rename refactoring. All resolution is scope-scoped
- * (see [resolveEnvMatch]).
+ * Enables Ctrl+Click navigation. All resolution is scope-scoped (see [resolveEnvMatch]).
+ *
+ * The provider is registered for [YAMLScalar] on purpose: contributed references are only
+ * requested from `YAMLScalarImpl.getReferences()`, never from the leaf tokens inside it, so a
+ * leaf-only provider (which this used to be) is never asked for anything and silently
+ * produces no references at all.
  */
 class EnvVarReferenceContributor : PsiReferenceContributor() {
 
     override fun registerReferenceProviders(registrar: PsiReferenceRegistrar) {
         registrar.registerReferenceProvider(
-            PlatformPatterns.psiElement(PsiElement::class.java).withLanguage(YAMLLanguage.INSTANCE),
+            PlatformPatterns.psiElement(YAMLScalar::class.java),
             object : PsiReferenceProvider() {
                 override fun getReferencesByElement(
                     element: PsiElement,
                     context: ProcessingContext,
                 ): Array<PsiReference> {
-                    // Only process leaf elements (no children) with non-empty text
-                    if (element.firstChild != null || element.textLength == 0) return PsiReference.EMPTY_ARRAY
+                    if (element.textLength == 0) return PsiReference.EMPTY_ARRAY
 
                     val vf = element.containingFile?.virtualFile ?: return PsiReference.EMPTY_ARRAY
                     val module = ModuleUtil.findModuleForPsiElement(element) ?: return PsiReference.EMPTY_ARRAY
 
-                    // Both directions differ only in how the span is found and which side is resolved.
-                    val span: EnvSpan
+                    // Both directions differ only in how the spans are found and which side is
+                    // resolved. One Spring scalar can hold several `${...}` references.
+                    val spans: List<EnvSpan>
                     val targets: (String) -> List<PsiElement>
+                    val springSpans = if (vf.isSpringApp()) springRefSpans(element) else emptyList()
                     when {
-                        vf.isSpringApp() -> {
-                            span = springRefSpans(element).firstOrNull() ?: return PsiReference.EMPTY_ARRAY
+                        springSpans.isNotEmpty() -> {
+                            spans = springSpans
                             targets = { findHelmTargets(it, element.project, module) }
                         }
                         vf.isHelmTemplate() -> {
-                            span = helmEnvNameSpan(element) ?: return PsiReference.EMPTY_ARRAY
+                            spans = listOfNotNull(helmEnvNameSpan(element))
                             targets = { findSpringTargets(it, element.project, module) }
                         }
                         else -> return PsiReference.EMPTY_ARRAY
                     }
-                    return arrayOf(
-                        EnvVarReference(element, span.relativeTo(element)) { targets(span.envVar) }
-                    )
+                    if (spans.isEmpty()) return PsiReference.EMPTY_ARRAY
+
+                    return spans.map { span ->
+                        EnvVarReference(element, span.relativeTo(element)) {
+                            excludingSelf(targets(span.envVar), vf)
+                        }
+                    }.toTypedArray()
                 }
             },
         )
@@ -66,7 +75,7 @@ private class EnvVarReference(
     element: PsiElement,
     range: TextRange,
     private val resolver: () -> List<PsiElement>,
-) : PsiPolyVariantReferenceBase<PsiElement>(element, range, false) {
+) : PsiPolyVariantReferenceBase<PsiElement>(element, range, /* soft = */ true) {
 
     override fun multiResolve(incomplete: Boolean): Array<ResolveResult> =
         deduplicated(resolver()).map(::PsiElementResolveResult).toTypedArray()

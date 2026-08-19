@@ -4,8 +4,21 @@
     <name>Spring Helm Env Hints</name>
     <vendor>kev007</vendor>
     <description><![CDATA[
-        <p><b>intellij-spring-helm-env-hints</b> is a plugin for navigating between Spring `application*.yml|yaml` configuration
-        and Helm template environment variables under `templates/`</p>
+        <p>Links Spring <code>application*.yml|yaml</code> configuration to the environment variables declared in
+        Helm chart templates, with highlighting and two-way navigation. Env var occurrences are coloured
+        differently depending on whether they exist on <b>both</b> sides (matched) or only one (unmatched), and an
+        inline <code>N refs</code> tag is shown next to every env var that resolves to at least one occurrence on
+        the opposite side — hover for the target <code>file:line</code> list, click to navigate.</p>
+
+        <p><b>Go to Declaration</b> (Ctrl/Cmd+B) jumps Spring &rarr; Helm and Helm &rarr; Spring. Because Spring and
+        Helm occurrences are registered as real PSI references, Ctrl+Click navigation and
+        <i>Refactor &rarr; Rename</i> work across files as well.</p>
+
+        <p>Settings live under <b>Settings &rarr; Other Settings &rarr; Spring Helm Env Hints</b>: toggle Spring
+        property key matching, switch to a project-wide scope, include folders excluded in the project structure,
+        show or hide the <code>N refs</code> tag (including hiding it for a single reference), choose between
+        background highlight and font colour with separate light/dark theme colours, and open a debug view that
+        dumps the live index per scope as matched / Helm-only / Spring-only.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
@@ -16,6 +29,11 @@
         <gotoDeclarationHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarGotoHandler"/>
         <psi.referenceContributor language="yaml" implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarReferenceContributor"/>
         <annotator language="yaml" implementationClass="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarAnnotator"/>
+
+        <!-- Refactor → Rename for env vars: renames every Spring/Helm occurrence in the scope.
+             Needed because both sides are plain YAML scalars, which the default rename
+             (which requires a PsiNamedElement declaration) refuses to touch. -->
+        <renameHandler implementation="com.github.kev007.intellijspringhelmenvhints.navigation.EnvVarRenameHandler"/>
 
         <!-- Matches plain YAML plus the template languages that own Helm charts
              (HelmYAML / GoTemplate), whose base language is NOT a YAML dialect. -->

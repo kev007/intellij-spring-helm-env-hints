@@ -10,7 +10,8 @@ variables declared in Helm chart templates, with highlighting and two-way naviga
 | Highlighting | Env var occurrences are coloured differently depending on whether they exist on **both** sides (matched) or only one (unmatched). No tooltips are added. |
 | Reference count tag | An inline `N refs` tag is shown next to every env var that resolves to at least one occurrence on the opposite side. Hover for the target `file:line` list, click to navigate. |
 | Go to Declaration | <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd> jumps Spring → Helm and Helm → Spring. |
-| Ctrl+Click / Rename | Spring and Helm occurrences are real PSI references, so click-navigation and *Refactor → Rename* work across files. |
+| Ctrl+Click | Spring and Helm occurrences are real PSI references, so click-navigation works across files. |
+| Rename | <kbd>Shift</kbd>+<kbd>F6</kbd> on an env var renames *every* occurrence of it in the scope — Spring `${ENV_VAR}` placeholders and Helm `env[*].name` entries — in one undoable, multi-file command. |
 
 ## How matching works
 
@@ -77,7 +78,8 @@ src/main/kotlin/.../navigation/
   EnvRefCountInlayProvider.kt   inline "N refs" tag (declarative inlay hint) + its click handler
   YamlLikeMetaLanguage.kt       meta language the inlay provider is registered for
   EnvVarGotoHandler.kt          Ctrl+B, merging PSI references with index lookups
-  EnvVarReferenceContributor.kt PSI references for Ctrl+Click and rename
+  EnvVarReferenceContributor.kt PSI references for Ctrl+Click
+  EnvVarRenameHandler.kt        Shift+F6, scope-wide rename of all occurrences
 src/main/kotlin/.../settings/   persistent state, Configurable, settings panel
 src/main/resources/META-INF/plugin.xml
 src/main/resources/messages/HelmEnvHintsBundle.properties   inlay provider name/description
@@ -105,10 +107,23 @@ src/main/resources/messages/HelmEnvHintsBundle.properties   inlay provider name/
   excluded in the project structure* is on, a `VirtualFileFilter` backed by
   `ProjectFileIndex.isExcluded` rejects excluded files, which also prunes the whole sub-tree.
 - Registered extensions: `annotator` (yaml), `psi.referenceContributor` (yaml),
-  `gotoDeclarationHandler`, `metaLanguage`, `codeInsight.declarativeInlayProvider`
+  `gotoDeclarationHandler`, `renameHandler`, `metaLanguage`,
+  `codeInsight.declarativeInlayProvider`
   (`SpringHelmEnvHintsYamlLike`) plus its `codeInsight.inlayActionHandler`,
   `applicationService`, `projectConfigurable`.
   *Find Usages* is **not** implemented.
+- The reference contributor is registered for `YAMLScalar`, **not** for leaf elements:
+  contributed references are only requested from `YAMLScalarImpl.getReferences()`, so a
+  leaf-only provider is never asked and produces nothing at all. One reference is created per
+  `${…}` placeholder, so a scalar with several placeholders is fully covered.
+- Rename is a custom `RenameHandler` rather than reference-driven renaming. There is no
+  *declaration* to rename: both sides are plain `YAMLScalar`s and not `PsiNamedElement`s, so
+  the platform's `PsiElementRenameHandler` refuses them. `EnvVarRenameHandler` instead asks the
+  index for every occurrence of the var in the scope (via `envOccurrences()`, which — unlike
+  `resolveEnvMatch()` — does *not* require both sides to be present, so one-sided vars can be
+  renamed too) and rewrites the exact name ranges (`envNameRanges()`) on the documents inside a
+  single `WriteCommandAction`, back-to-front per document. Spring occurrences that come from
+  the property-key conversion are skipped, because their text is a key, not an env var name.
 - The reference-count tag reuses `resolveEnvMatch()` through `counterpartRefs()`, so it can
   never disagree with the highlight or with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>. It is
   anchored at `EnvSpan.tagOffset` (after the closing `}` of `${…}`, or after the Helm value's
