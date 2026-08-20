@@ -14,6 +14,12 @@
         Helm occurrences are registered as real PSI references, Ctrl+Click navigation and
         <i>Refactor &rarr; Rename</i> work across files as well.</p>
 
+        <p>Placeholders that reference a property of the same <code>application*.yaml</code>
+        (<code>url: ${app.host}:${app.port}</code>) — or that the IDE itself already resolves — count as valid
+        references: they are highlighted as matched instead of missing and navigate to the declaring key.
+        Targets the IDE resolves on its own are merged in, so a key declared in several profile files
+        (<code>application-local.yml</code>, …) offers every declaration.</p>
+
         <p>Settings live under <b>Settings &rarr; Other Settings &rarr; Spring Helm Env Hints</b>: toggle Spring
         property key matching, switch to a project-wide scope, include folders excluded in the project structure,
         show or hide the <code>N refs</code> tag (including hiding it for a single reference), choose between

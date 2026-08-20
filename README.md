@@ -11,6 +11,8 @@ variables declared in Helm chart templates, with highlighting and two-way naviga
 | Reference count tag | An inline `N refs` tag is shown next to every env var that resolves to at least one occurrence on the opposite side. Hover for the target `file:line` list, click to navigate. |
 | Go to Declaration | <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd> jumps Spring → Helm and Helm → Spring. |
 | Ctrl+Click | Spring and Helm occurrences are real PSI references, so click-navigation works across files. |
+| Same-file placeholders | A Spring placeholder pointing at a property of its *own* `application*.yaml` (`url: ${app.host}:${app.port}`) counts as a valid reference: it is highlighted as matched, navigates to the declaring key, and is included in the `N refs` tag. |
+| IDE-resolved placeholders | Placeholders the IDE resolves itself (Spring Boot config keys) keep all their built-in targets: every declaration across profile files (`application-local.yml`, …) is offered by <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd> and counted by the tag. |
 | Rename | <kbd>Shift</kbd>+<kbd>F6</kbd> on an env var renames *every* occurrence of it in the scope — Spring `${ENV_VAR}` placeholders and Helm `env[*].name` entries — in one undoable, multi-file command. |
 
 ## How matching works
@@ -40,8 +42,26 @@ path alone is deliberately avoided: a root/aggregate module's content root conta
 sub-project and would collapse all services into one scope. The *Match env vars across all
 project modules* setting replaces per-module scopes with a single project-wide scope.
 
-Navigation targets located in the source file itself are filtered out, so a file that
-qualifies as both a Spring file and a Helm template cannot self-resolve.
+Cross-side navigation targets located in the source file itself are filtered out, so a file
+that qualifies as both a Spring file and a Helm template cannot self-resolve.
+
+**Placeholders resolved inside their own file.** Not every `${…}` needs a Helm counterpart: a
+Spring file may reference its own properties (`url: ${app.host}:${app.port}`). Such a
+placeholder is treated as a valid, navigable reference to the key that declares it, using
+Spring's relaxed binding (`my.service-url` ≡ `my.serviceUrl` ≡ `my.service_url`); the key the
+placeholder is written in is excluded, so a circular `url: ${url}` does not resolve to itself.
+Because these targets live in the source file, they are added *after* the self-loop filter
+described above.
+
+**Placeholders the IDE resolves itself.** When another plugin already resolves a placeholder —
+typically the Spring Boot support, matching `${…}` against the module's configuration keys —
+its targets are collected and merged instead of re-implementing that lookup: the placeholder
+counts as matched, and *every* built-in declaration (the same key in `application.yml`,
+`application-local.yml`, …) stays reachable. This is mandatory rather than a nicety: the
+platform stops at the first `GotoDeclarationHandler` returning a non-empty result and skips
+its own reference-based resolution, so any target this plugin omits would become unreachable.
+Only references sitting inside the `${…}` range are considered, this plugin's own references
+are filtered out (`EnvVarPluginReference`), and the query is re-entrancy guarded.
 
 ## Settings
 
@@ -55,8 +75,10 @@ qualifies as both a Spring file and a Helm template cannot self-resolve.
 - **Show "N refs" tag** — inline reference-count tag, on by default. It is a declarative inlay
   hint, so it can also be switched off under <kbd>Settings</kbd> → <kbd>Editor</kbd> →
   <kbd>Inlay Hints</kbd> → <kbd>Other</kbd>. The count is the number of *deduplicated*
-  targets outside the current file — exactly what <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>
-  would offer — so an env var without a counterpart is never tagged.
+  targets the occurrence resolves to — the counterparts outside the current file plus, for a
+  Spring placeholder, the keys of its own file it points at — exactly what
+  <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd> would offer, so an env var with nothing to
+  navigate to is never tagged.
 - **Hide the tag when there is only one reference** — on by default, nested under the toggle
   above. A lone target is already reachable with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>,
   so the `1 ref` tag adds clutter without adding information; disable it to tag those
@@ -127,7 +149,16 @@ src/main/resources/messages/HelmEnvHintsBundle.properties   inlay provider name/
 - The reference-count tag reuses `resolveEnvMatch()` through `counterpartRefs()`, so it can
   never disagree with the highlight or with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>B</kbd>. It is
   anchored at `EnvSpan.tagOffset` (after the closing `}` of `${…}`, or after the Helm value's
-  closing quote) so it never splits the highlighted text.
+  closing quote) so it never splits the highlighted text. Its click payload carries the
+  occurrence offset next to the var name (`ENV_VAR@offset`), because same-file targets are
+  resolved relative to the placeholder — a name-only payload would offer a different set than
+  the tag counted.
+- Same-file resolution lives in `EnvVarUtils.kt`: `springLocalTargets()` (keys of the file,
+  cached per PSI file so the per-scalar lookup stays linear) and `platformPlaceholderTargets()`
+  (`PsiReferenceService` query on the enclosing `YAMLScalar`, restricted to the `${…}` range,
+  skipping this plugin's own references via the `EnvVarPluginReference` marker, re-entrancy
+  guarded and tolerant of `IndexNotReadyException`). `springPlaceholderTargets()` combines both
+  and is what the goto handler, the tag and its click handler use, so all three agree.
 
 ## Build and run
 

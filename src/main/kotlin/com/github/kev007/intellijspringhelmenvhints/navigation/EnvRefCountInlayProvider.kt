@@ -25,6 +25,24 @@ internal const val ENV_REF_COUNT_HANDLER_ID = "spring.helm.env.reference.count"
 private const val MAX_TOOLTIP_ENTRIES = 10
 
 /**
+ * Separator of the tag payload (`ENV_VAR@offset`).
+ *
+ * The click handler needs the *occurrence* the tag belongs to, not just the var name: same-file
+ * targets are resolved relative to the placeholder (the key it is written in is not a target of
+ * itself), so a name-only payload would make the click list differ from the rendered count.
+ * `@` cannot appear in an env var name (see [ENV_REF_REGEX]), so splitting is unambiguous.
+ */
+private const val PAYLOAD_SEPARATOR = '@'
+
+private fun encodePayload(envVar: String, offset: Int) = "$envVar$PAYLOAD_SEPARATOR$offset"
+
+private fun decodePayload(payload: String): Pair<String, Int?> {
+    val i = payload.lastIndexOf(PAYLOAD_SEPARATOR)
+    if (i < 0) return payload to null
+    return payload.substring(0, i) to payload.substring(i + 1).toIntOrNull()
+}
+
+/**
  * Renders an inline "N refs" tag right after a highlighted env var occurrence, stating how
  * many occurrences it resolves to on the opposite side:
  *
@@ -90,28 +108,48 @@ private class EnvRefCountCollector(
         val module = ModuleUtilCore.findModuleForFile(vf, file.project) ?: return
 
         for (span in envSpansInFile(yaml, fromSpring)) {
-            val refs = counterpartRefs(span.envVar, file.project, module, vf, fromSpring)
-//            if (refs.isEmpty()) continue
+            // A placeholder also resolves to properties of this very application file and to
+            // whatever the IDE's own references find (e.g. the key declared in
+            // application-local.yml) — those are references too, so they are counted and
+            // offered next to the Helm counterparts.
+            val placeholder = if (fromSpring) {
+                yaml.findElementAt(span.startOffset)?.let { springPlaceholderTargets(it, span) }.orEmpty()
+            } else emptyList()
+            val refs = deduplicated(
+                counterpartRefs(span.envVar, file.project, module, vf, fromSpring) + placeholder
+            )
+            // An occurrence with nothing to navigate to carries no information — a "0 refs" tag
+            // would only repeat what the "unmatched" highlight already says.
+            if (refs.isEmpty()) continue
             if (hideSingleRef && refs.size == 1) continue
             sink.addPresentation(
                 position = InlineInlayPosition(span.tagOffset, relatedToPrevious = true),
-                tooltip = tooltip(span.envVar, refs),
+                tooltip = tooltip(span.envVar, refs, mixed = placeholder.isNotEmpty()),
                 hintFormat = HintFormat.default,
             ) {
                 text(
                     if (refs.size == 1) "1 ref" else "${refs.size} refs",
-                    InlayActionData(StringInlayActionPayload(span.envVar), ENV_REF_COUNT_HANDLER_ID),
+                    InlayActionData(
+                        StringInlayActionPayload(encodePayload(span.envVar, span.startOffset)),
+                        ENV_REF_COUNT_HANDLER_ID,
+                    ),
                 )
             }
         }
     }
 
     /** "DATASOURCE_URL → 3 Helm references" followed by the file:line of each one. */
-    private fun tooltip(envVar: String, refs: List<PsiElement>): String {
-        val side = if (fromSpring) "Helm" else "Spring"
+    private fun tooltip(envVar: String, refs: List<PsiElement>, mixed: Boolean): String {
+        // The side qualifier is dropped once placeholder targets (same file, or resolved by the
+        // IDE itself) are mixed in — those are neither "Helm" nor index-side "Spring" refs.
+        val side = when {
+            mixed -> ""
+            fromSpring -> "Helm "
+            else -> "Spring "
+        }
         val noun = if (refs.size == 1) "reference" else "references"
         return buildString {
-            append("$envVar → ${refs.size} $side $noun")
+            append("$envVar → ${refs.size} $side$noun")
             refs.take(MAX_TOOLTIP_ENTRIES).forEach { append("\n• ${describe(it)}") }
             if (refs.size > MAX_TOOLTIP_ENTRIES) append("\n• … ${refs.size - MAX_TOOLTIP_ENTRIES} more")
         }
@@ -136,13 +174,25 @@ private class EnvRefCountCollector(
 class EnvRefCountActionHandler : InlayActionHandler {
 
     override fun handleClick(editor: Editor, payload: InlayActionPayload) {
-        val envVar = (payload as? StringInlayActionPayload)?.text ?: return
+        val text = (payload as? StringInlayActionPayload)?.text ?: return
+        val (envVar, offset) = decodePayload(text)
         val project = editor.project ?: return
         val file = PsiDocumentManager.getInstance(project).getPsiFile(editor.document) ?: return
         val vf = file.virtualFile ?: return
         val module = ModuleUtilCore.findModuleForFile(vf, project) ?: return
 
-        val targets = counterpartRefs(envVar, project, module, vf, fromSpring = vf.isSpringApp())
+        // Same resolution as the tag: counterparts on the opposite side, plus everything the
+        // placeholder resolves to on its own side (keys of this file, IDE-resolved targets).
+        val placeholder = offset
+            ?.let { envOccurrenceAt(file, it) }
+            // The document may have been edited since the tag was rendered, so only trust the
+            // offset when it still carries the occurrence the tag was created for.
+            ?.takeIf { it.envVar == envVar }
+            ?.let { span -> file.yamlRoot()?.findElementAt(span.startOffset)?.let { springPlaceholderTargets(it, span) } }
+            .orEmpty()
+        val targets = deduplicated(
+            counterpartRefs(envVar, project, module, vf, fromSpring = vf.isSpringApp()) + placeholder
+        )
         if (targets.isEmpty()) return
         // Navigates straight to a lone target and shows the standard chooser popup otherwise.
         PsiTargetNavigator(targets).navigate(editor, "References to $envVar")

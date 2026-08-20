@@ -6,6 +6,7 @@ import com.intellij.openapi.diagnostic.debug
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectRootManager
@@ -16,6 +17,9 @@ import com.intellij.openapi.vfs.VirtualFileFilter
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.psi.PsiPolyVariantReference
+import com.intellij.psi.PsiReference
+import com.intellij.psi.PsiReferenceService
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiModificationTracker
@@ -164,6 +168,158 @@ internal fun springEnvVarAtOffset(file: PsiFile, offset: Int): String? {
     }
     return null
 }
+
+// ─── Spring placeholder targets (own keys + whatever the IDE itself resolves) ─
+
+/**
+ * Marker for the references this plugin contributes.
+ *
+ * Lets [platformPlaceholderTargets] tell "somebody else already resolves this placeholder"
+ * apart from "we resolve it ourselves", without re-entering our own resolution.
+ */
+internal interface EnvVarPluginReference
+
+/**
+ * Relaxed form of a property key / placeholder name: Spring treats `my.service-url`,
+ * `my.serviceUrl` and `my.service_url` as the same property, so the local lookup must not
+ * report a placeholder as unresolved just because of the notation used.
+ */
+private fun relaxedKey(key: String) = key.lowercase().replace("-", "").replace("_", "")
+
+/** Property keys declared in one Spring file, indexed by exact and by [relaxedKey] path. */
+private class SpringKeyIndex(
+    val byPath: Map<String, List<PsiElement>>,
+    val byRelaxedPath: Map<String, List<PsiElement>>,
+)
+
+/**
+ * The property keys of [yamlFile], cached on the file itself: the annotator asks for this
+ * once per scalar, so re-walking the whole file every time would be quadratic.
+ */
+private fun springKeyIndex(yamlFile: YAMLFile): SpringKeyIndex =
+    CachedValuesManager.getCachedValue(yamlFile) {
+        val occurrences = springKeyOccurrences(yamlFile)
+        CachedValueProvider.Result.create(
+            SpringKeyIndex(
+                byPath = occurrences.groupBy({ it.first }, { it.second }),
+                byRelaxedPath = occurrences.groupBy({ relaxedKey(it.first) }, { it.second }),
+            ),
+            yamlFile,
+        )
+    }
+
+/**
+ * The property keys **in the same Spring file** a `${...}` placeholder resolves to.
+ *
+ * A Spring `application*.yaml` may reference its own properties
+ * (`url: ${app.host}:${app.port}`); such a placeholder is perfectly valid even though no Helm
+ * `env[*].name` declares it, so it must neither be flagged as unmatched nor be left without a
+ * navigation target.
+ *
+ * The key the placeholder is written in is excluded, so `url: ${url}` (a circular reference)
+ * does not resolve to itself.
+ */
+internal fun springLocalTargets(element: PsiElement, envVar: String): List<PsiElement> {
+    val file = element.containingFile ?: return emptyList()
+    val targets = springLocalTargetsInFile(file, envVar)
+    if (targets.isEmpty()) return emptyList()
+    val ownKeyValue = PsiTreeUtil.getParentOfType(element, YAMLKeyValue::class.java)
+    return targets.filter { it.parent !== ownKeyValue }
+}
+
+/**
+ * All property keys of the Spring file [file] a placeholder named [envVar] resolves to,
+ * without the "not the key I am written in" filter of [springLocalTargets].
+ */
+private fun springLocalTargetsInFile(file: PsiFile, envVar: String): List<PsiElement> {
+    if (file.virtualFile?.isSpringApp() != true) return emptyList()
+    val yaml = file.yamlRoot() ?: return emptyList()
+    val index = springKeyIndex(yaml)
+    return index.byPath[envVar]?.takeIf { it.isNotEmpty() }
+        ?: index.byRelaxedPath[relaxedKey(envVar)].orEmpty()
+}
+
+/**
+ * Re-entrancy guard for [platformPlaceholderTargets]: resolving a foreign reference may
+ * ask for the references of the same element again, which would otherwise loop.
+ */
+private val resolvingPlatformReferences = ThreadLocal.withInitial { false }
+
+/**
+ * The element [PsiReferenceService] has to be asked for contributed references: they live on
+ * the enclosing [YAMLScalar], never on the leaf tokens inside it, so a leaf (which is what an
+ * offset lookup yields) must be lifted to its scalar first.
+ */
+private fun referenceHost(element: PsiElement): PsiElement? =
+    element as? YAMLScalar ?: PsiTreeUtil.getParentOfType(element, YAMLScalar::class.java, false)
+
+/**
+ * Every element the references contributed by the platform (or by another plugin — e.g. the
+ * Spring Boot support, which resolves `${...}` placeholders against the configuration keys of
+ * the module) resolve the placeholder [span] to.
+ *
+ * Re-using the IDE's own resolution means a placeholder the IDE considers resolvable is never
+ * reported as missing here, **and** that its targets stay reachable: a
+ * [com.intellij.codeInsight.navigation.actions.GotoDeclarationHandler] returning a non-empty
+ * result replaces the platform's reference-based navigation, so every built-in target has to
+ * be part of that result — including the several declarations a key can have across profile
+ * files (`application.yml`, `application-local.yml`, …).
+ *
+ * Only references that sit **inside** the `${...}` expression are considered; references
+ * spanning the whole scalar (file paths, URLs, …) say nothing about the placeholder.
+ */
+internal fun platformPlaceholderTargets(element: PsiElement, span: EnvSpan): List<PsiElement> {
+    if (resolvingPlatformReferences.get()) return emptyList()
+    if (element.containingFile?.virtualFile?.isSpringApp() != true) return emptyList()
+    val host = referenceHost(element) ?: return emptyList()
+    val base = host.textRange?.startOffset ?: return emptyList()
+    // `${` before the name, and everything up to the closing `}` (kept in EnvSpan.tagOffset).
+    val start = span.startOffset - 2 - base
+    val end = span.tagOffset - base
+    if (start < 0 || end > host.textLength || start >= end) return emptyList()
+    val expression = TextRange(start, end)
+
+    resolvingPlatformReferences.set(true)
+    try {
+        return PsiReferenceService.getService()
+            .getReferences(host, PsiReferenceService.Hints.NO_HINTS)
+            .filter { it !is EnvVarPluginReference && expression.contains(it.rangeInElement) }
+            .flatMap { it.targets() }
+    } catch (e: IndexNotReadyException) {
+        LOG.debug("Placeholder reference resolution skipped while indexing", e)
+        return emptyList()
+    } finally {
+        resolvingPlatformReferences.set(false)
+    }
+}
+
+private fun PsiReference.targets(): List<PsiElement> =
+    if (this is PsiPolyVariantReference) multiResolve(false).mapNotNull { it.element }
+    else listOfNotNull(resolve())
+
+/**
+ * Every target of the Spring `${...}` placeholder [span] that is not a Helm counterpart: the
+ * property keys of the file it is written in, plus everything the IDE's own placeholder
+ * references resolve to (typically the same key declared in sibling profile files such as
+ * `application-local.yml`).
+ *
+ * These targets may well live in the source file itself, so they are always collected *after*
+ * the cross-file self-loop filter ([excludingSelf]) rather than through it.
+ */
+internal fun springPlaceholderTargets(element: PsiElement, span: EnvSpan): List<PsiElement> =
+    deduplicated(springLocalTargets(element, span.envVar) + platformPlaceholderTargets(element, span))
+
+/**
+ * True when the `${...}` placeholder [span] of [element] resolves to anything besides a Helm
+ * entry — a property key of its own file, or a target found by the IDE's own placeholder
+ * resolution. Such a placeholder is a valid reference and must not be highlighted as missing.
+ *
+ * Short-circuits on the cheap same-file lookup, so foreign references are only resolved for
+ * placeholders that are not already explained by the file itself.
+ */
+internal fun isSpringPlaceholderResolved(element: PsiElement, span: EnvSpan): Boolean =
+    springLocalTargets(element, span.envVar).isNotEmpty() ||
+        platformPlaceholderTargets(element, span).isNotEmpty()
 
 // ─── Helm YAML utilities ──────────────────────────────────────────────────────
 

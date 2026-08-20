@@ -10,7 +10,13 @@ import com.intellij.psi.PsiPolyVariantReference
  * Handles Ctrl+B / Cmd+B Go-to-Declaration for Spring ↔ Helm env var cross-navigation.
  *
  * Merges any PSI references already attached at the caret position with targets resolved
- * from the opposite file system, enabling navigation from YAML keys (not just values).
+ * from the opposite file system, enabling navigation from YAML keys (not just values), plus
+ * every target a Spring placeholder resolves to inside its own `application*.yaml` or through
+ * the IDE's own placeholder references (a key declared in `application-local.yml`, …).
+ *
+ * Collecting the latter is not optional: the platform stops at the FIRST goto handler that
+ * returns a non-empty result and skips its own reference-based resolution, so anything left
+ * out here would become unreachable.
  */
 class EnvVarGotoHandler : GotoDeclarationHandler {
 
@@ -41,7 +47,15 @@ class EnvVarGotoHandler : GotoDeclarationHandler {
             else -> emptyList()
         }
 
-        return excludingSelf(deduplicated(fromRefs + fromMapping), vf)
+        // Everything a `${...}` placeholder resolves to besides a Helm entry: keys of this very
+        // file, and the declarations the IDE itself finds (possibly several, across profile
+        // files). Those targets may live in the source file, so they are added AFTER the
+        // self-loop filter, which only concerns the cross-file Spring ↔ Helm directions.
+        val placeholder = if (vf.isSpringApp()) {
+            envOccurrenceAt(file, offset)?.let { springPlaceholderTargets(source, it) }.orEmpty()
+        } else emptyList()
+
+        return deduplicated(excludingSelf(fromRefs + fromMapping, vf) + placeholder)
             .toTypedArray().takeIf { it.isNotEmpty() }
     }
 }

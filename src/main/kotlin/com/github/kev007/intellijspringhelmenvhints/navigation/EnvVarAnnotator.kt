@@ -57,19 +57,23 @@ class EnvVarAnnotator : Annotator {
         val module = ModuleUtil.findModuleForPsiElement(element) ?: return
 
         // Spring occurrences are navigable references and get an underline; Helm names do not.
-        val underline: Boolean
+        val fromSpring: Boolean
         val spans: List<EnvSpan> = when {
-            vf.isSpringApp() -> { underline = true; springRefSpans(element) }
-            vf.isHelmTemplate() -> { underline = false; listOfNotNull(helmEnvNameSpan(element)) }
+            vf.isSpringApp() -> { fromSpring = true; springRefSpans(element) }
+            vf.isHelmTemplate() -> { fromSpring = false; listOfNotNull(helmEnvNameSpan(element)) }
             else -> return
         }
 
         for (span in spans) {
+            // A Spring placeholder that resolves to a property of its own application file, or
+            // to a target the IDE's own placeholder resolution finds (a key declared in a
+            // sibling profile file, …), is a valid reference and must not be painted as
+            // "missing on the Helm side".
+            val matched = isEnvMatched(span.envVar, element.project, module) ||
+                (fromSpring && isSpringPlaceholderResolved(element, span))
             holder.newSilentAnnotation(HighlightSeverity.INFORMATION)
                 .range(TextRange(span.startOffset, span.endOffset))
-                .enforcedTextAttributes(
-                    envAttributes(isEnvMatched(span.envVar, element.project, module), underline)
-                )
+                .enforcedTextAttributes(envAttributes(matched, underline = fromSpring))
                 .create()
         }
     }
