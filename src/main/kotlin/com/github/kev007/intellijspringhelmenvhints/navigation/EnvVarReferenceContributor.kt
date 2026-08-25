@@ -51,13 +51,13 @@ class EnvVarReferenceContributor : PsiReferenceContributor() {
                     // `application*.yaml` (`url: ${app.host}:${app.port}`). Those keys are legal
                     // targets, so they are resolved separately from the cross-file ones — the
                     // cross-file resolution deliberately drops everything located in this file.
-                    val localTargets: (String) -> List<PsiElement>
+                    val localTargets: (EnvSpan) -> List<PsiElement>
                     val springSpans = if (vf.isSpringApp()) springRefSpans(element) else emptyList()
                     when {
                         springSpans.isNotEmpty() -> {
                             spans = springSpans
                             targets = { findHelmTargets(it, element.project, module) }
-                            localTargets = { springLocalTargets(element, it) }
+                            localTargets = { springLocalTargets(element, it.envVar, it.startOffset) }
                         }
                         vf.isHelmTemplate() -> {
                             spans = listOfNotNull(helmEnvNameSpan(element))
@@ -70,7 +70,13 @@ class EnvVarReferenceContributor : PsiReferenceContributor() {
 
                     return spans.map { span ->
                         EnvVarReference(element, span.relativeTo(element)) {
-                            excludingSelf(targets(span.envVar), vf) + localTargets(span.envVar)
+                            // A reference never resolves onto its own line: that "target" is the
+                            // reference itself, so resolving there would be a no-op jump.
+                            excludingSameLine(
+                                excludingSelf(targets(span.envVar), vf) + localTargets(span),
+                                element.containingFile,
+                                span.startOffset,
+                            )
                         }
                     }.toTypedArray()
                 }

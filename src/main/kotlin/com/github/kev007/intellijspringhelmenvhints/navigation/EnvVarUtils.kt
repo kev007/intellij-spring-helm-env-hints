@@ -11,9 +11,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileFilter
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
@@ -217,14 +219,19 @@ private fun springKeyIndex(yamlFile: YAMLFile): SpringKeyIndex =
  * navigation target.
  *
  * The key the placeholder is written in is excluded, so `url: ${url}` (a circular reference)
- * does not resolve to itself.
+ * does not resolve to itself; [refOffset] (the placeholder position, which for a multi-line
+ * scalar is not the element start) additionally drops every target on that very line.
  */
-internal fun springLocalTargets(element: PsiElement, envVar: String): List<PsiElement> {
+internal fun springLocalTargets(
+    element: PsiElement,
+    envVar: String,
+    refOffset: Int = element.textRange?.startOffset ?: 0,
+): List<PsiElement> {
     val file = element.containingFile ?: return emptyList()
     val targets = springLocalTargetsInFile(file, envVar)
     if (targets.isEmpty()) return emptyList()
     val ownKeyValue = PsiTreeUtil.getParentOfType(element, YAMLKeyValue::class.java)
-    return targets.filter { it.parent !== ownKeyValue }
+    return excludingSameLine(targets.filter { it.parent !== ownKeyValue }, file, refOffset)
 }
 
 /**
@@ -304,22 +311,37 @@ private fun PsiReference.targets(): List<PsiElement> =
  * `application-local.yml`).
  *
  * These targets may well live in the source file itself, so they are always collected *after*
- * the cross-file self-loop filter ([excludingSelf]) rather than through it.
+ * the cross-file self-loop filter ([excludingSelf]) rather than through it — but never on the
+ * placeholder's own line ([excludingSameLine]), which would just be the placeholder itself.
  */
 internal fun springPlaceholderTargets(element: PsiElement, span: EnvSpan): List<PsiElement> =
-    deduplicated(springLocalTargets(element, span.envVar) + platformPlaceholderTargets(element, span))
+    excludingSameLine(
+        deduplicated(
+            springLocalTargets(element, span.envVar, span.startOffset) +
+                platformPlaceholderTargets(element, span)
+        ),
+        element.containingFile,
+        span.startOffset,
+    )
 
 /**
  * True when the `${...}` placeholder [span] of [element] resolves to anything besides a Helm
  * entry — a property key of its own file, or a target found by the IDE's own placeholder
  * resolution. Such a placeholder is a valid reference and must not be highlighted as missing.
  *
+ * A target on the placeholder's own line does not count: `url: ${url}` resolves to nothing but
+ * itself, which is a circular reference and not a resolution.
+ *
  * Short-circuits on the cheap same-file lookup, so foreign references are only resolved for
  * placeholders that are not already explained by the file itself.
  */
 internal fun isSpringPlaceholderResolved(element: PsiElement, span: EnvSpan): Boolean =
-    springLocalTargets(element, span.envVar).isNotEmpty() ||
-        platformPlaceholderTargets(element, span).isNotEmpty()
+    springLocalTargets(element, span.envVar, span.startOffset).isNotEmpty() ||
+        excludingSameLine(
+            platformPlaceholderTargets(element, span),
+            element.containingFile,
+            span.startOffset,
+        ).isNotEmpty()
 
 // ─── Helm YAML utilities ──────────────────────────────────────────────────────
 
@@ -703,6 +725,51 @@ internal fun deduplicated(elements: List<PsiElement>): List<PsiElement> =
 internal fun excludingSelf(targets: List<PsiElement>, sourceFile: VirtualFile?): List<PsiElement> {
     val self = sourceFile?.path ?: return targets
     return targets.filter { it.containingFile?.virtualFile?.path != self }
+}
+
+/**
+ * Removes every target that sits on the SAME LINE of the SAME FILE as [offset].
+ *
+ * References *within* one `application*.yaml` are legitimate and stay resolvable — a
+ * placeholder may point at any other property of its own file — but a target on the line the
+ * reference is written on is the reference itself (`url: ${url}`, or the platform resolving a
+ * placeholder back onto its own key). Navigating there is a no-op, and counting it would claim
+ * a resolution that does not exist, so such targets are dropped.
+ *
+ * Line granularity (rather than PSI identity) is what makes this robust: the self target can be
+ * the key element, the whole key/value pair or the scalar value, depending on who resolved it.
+ */
+internal fun excludingSameLine(
+    targets: List<PsiElement>,
+    sourceFile: PsiFile?,
+    offset: Int,
+): List<PsiElement> {
+    if (targets.isEmpty()) return targets
+    val file = sourceFile ?: return targets
+    val sourcePath = file.filePath() ?: return targets
+    val sourceLine = lineNumberOf(file, offset) ?: return targets
+    return targets.filterNot { target ->
+        val targetFile = target.containingFile ?: return@filterNot false
+        targetFile.filePath() == sourcePath &&
+            lineNumberOf(targetFile, target.textRange?.startOffset ?: return@filterNot false) == sourceLine
+    }
+}
+
+/**
+ * Identifies the file a PSI element belongs to across view providers: a Helm template exposes
+ * one [PsiFile] per language (template + template data), all backed by the same virtual file.
+ */
+private fun PsiFile.filePath(): String? = originalFile.virtualFile?.path
+
+/** 0-based line [offset] falls on, or null when it cannot be determined. */
+private fun lineNumberOf(file: PsiFile, offset: Int): Int? {
+    if (offset < 0) return null
+    val document = file.viewProvider.document
+        ?: PsiDocumentManager.getInstance(file.project).getDocument(file.originalFile)
+    if (document != null && offset <= document.textLength) return document.getLineNumber(offset)
+    val text = file.text ?: return null
+    if (offset > text.length) return null
+    return StringUtil.offsetToLineNumber(text, offset).takeIf { it >= 0 }
 }
 
 /**

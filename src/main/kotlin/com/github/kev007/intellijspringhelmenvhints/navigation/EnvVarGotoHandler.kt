@@ -55,8 +55,13 @@ class EnvVarGotoHandler : GotoDeclarationHandler {
             envOccurrenceAt(file, offset)?.let { springPlaceholderTargets(source, it) }.orEmpty()
         } else emptyList()
 
-        return deduplicated(excludingSelf(fromRefs + fromMapping, vf) + placeholder)
-            .toTypedArray().takeIf { it.isNotEmpty() }
+        // References inside one application.yaml stay resolvable, but never onto the line the
+        // caret is on: that target is the reference itself and navigating to it does nothing.
+        return excludingSameLine(
+            deduplicated(excludingSelf(fromRefs + fromMapping, vf) + placeholder),
+            file,
+            offset,
+        ).toTypedArray().takeIf { it.isNotEmpty() }
     }
 }
 
